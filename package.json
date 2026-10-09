@@ -1,0 +1,49 @@
+{
+  "name": "runit-cli",
+  "version": "0.7.0",
+  "description": "Run any project with one command: detects the stack, installs only what is missing, starts it and prints a clickable localhost link",
+  "bin": {
+    "runit": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "cli",
+    "run",
+    "setup",
+    "dev",
+    "onboarding",
+    "react",
+    "python",
+    "nextjs",
+    "fastapi",
+    "flask",
+    "django",
+    "zero-dependency"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/smoke.test.js",
+    "prepublishOnly": "node --check index.js && npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abhinavkumar-07/runit-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Abhinavkumar-07/runit-cli/issues"
+  },
+  "homepage": "https://github.com/Abhinavkumar-07/runit-cli#readme",
+  "author": "Abhinav Kumar",
+  "publishConfig": {
+    "access": "public"
+  }
+}
