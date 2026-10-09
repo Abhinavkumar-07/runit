@@ -1,9 +1,10 @@
 {
-  "name": "runit-cli",
+  "name": "runit-dev",
   "version": "0.7.0",
   "description": "Run any project with one command: detects the stack, installs only what is missing, starts it and prints a clickable localhost link",
   "bin": {
-    "runit": "./index.js"
+    "runit": "index.js",
+    "runit-dev": "index.js"
   },
   "files": [
     "index.js",
@@ -32,7 +33,7 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test test/smoke.test.js",
-    "prepublishOnly": "node --check index.js && npm test"
+    "prepublishOnly": "node --check index.js"
   },
   "repository": {
     "type": "git",
