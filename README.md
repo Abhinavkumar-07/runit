@@ -79,6 +79,8 @@ runit [folder] [options]
 | `--clean-env` | Restrict environment variables passed to the application to an essential whitelist. |
 | `--env=FOO,BAR` | Whitelist specific environment variables when `--clean-env` is active. |
 | `--all` | Allow launching more than 5 services concurrently. |
+| `--docker` | Prioritize running in Docker (`docker-compose` or `Dockerfile`) to avoid downloading host dependencies. |
+| `--no-docker` | Disable Docker detection and force local host runtime execution. |
 | `--verbose` | Output detailed internal scanner and runtime diagnostics (`[runit:debug:<topic>]`). |
 | `--version`, `-v` | Display the installed version. |
 | `--help`, `-h` | Display usage instructions and available options. |

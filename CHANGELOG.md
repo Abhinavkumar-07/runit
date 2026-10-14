@@ -1,6 +1,9 @@
 # Changelog
 
 ## 0.8.0
+- **Docker Compose Prioritization**: when `docker-compose.yml` (or `compose.yaml`) exists and Docker is available, `runit` prioritizes the containerized stack over downloading and compiling host dependencies (`npm install` / `pip install`), preventing dependency conflicts and missing service errors.
+- **Dockerfile Support**: added native detection and execution for standalone `Dockerfile` / `Dockerfile.dev` projects (builds image and runs container with host port binding).
+- **Docker CLI Flags**: added `--docker` (explicitly prefer Docker environment) and `--no-docker` (disable Docker and force local host runtime execution).
 - **AI / ML Frameworks**: added native detection and default port (7860) for Gradio (`gr.Interface`, `gr.Blocks`, `gr.ChatInterface`), and support for Litestar ASGI applications.
 - **Modern Python Lockfiles**: added lockfile change tracking (`poetry.lock`, `uv.lock`, `pdm.lock`) into installation stamp checks so environment updates are triggered automatically.
 - **Actionable Runtime Diagnostics**:

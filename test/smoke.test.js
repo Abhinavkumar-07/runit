@@ -401,3 +401,44 @@ test("Environment templates: .env.dist and .env.local.example are recognized", (
   assert.match(r.out, /Found:/);
 });
 
+test("Docker prioritization and --docker / --no-docker flags", () => {
+  const dir = project({
+    "package.json": JSON.stringify({ scripts: { start: "node server.js" } }),
+    "server.js": SERVER,
+    "docker-compose.yml": `
+version: "3"
+services:
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+`,
+  });
+
+  // Explicit --docker forces Docker Compose over package.json
+  const rDocker = once([dir, "--dry", "--docker"]);
+  assert.strictEqual(rDocker.code, 0);
+  assert.match(rDocker.out, /Docker Compose/);
+
+  // Explicit --no-docker forces Node.js over Docker Compose
+  const rNoDocker = once([dir, "--dry", "--no-docker"]);
+  assert.strictEqual(rNoDocker.code, 0);
+  assert.match(rNoDocker.out, /Node/);
+});
+
+test("Dockerfile detection for standalone container projects", () => {
+  const dir = project({
+    "Dockerfile": `
+FROM alpine
+EXPOSE 8080
+CMD ["echo", "running"]
+`,
+  });
+
+  const r = once([dir, "--dry", "--docker"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /Dockerfile/);
+  assert.match(r.out, /docker build/);
+});
+
+

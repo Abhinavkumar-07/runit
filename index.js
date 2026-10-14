@@ -11,7 +11,7 @@ const http = require("http");
 const { spawn, spawnSync } = require("child_process");
 
 const argv = process.argv.slice(2);
-const KNOWN_FLAGS = new Set(["--no-open", "--dry", "--dry-run", "--all", "--yes", "-y", "--safe", "--clean-env", "--verbose", "--help", "-h", "--version", "-v"]);
+const KNOWN_FLAGS = new Set(["--no-open", "--dry", "--dry-run", "--all", "--yes", "-y", "--safe", "--clean-env", "--verbose", "--docker", "--no-docker", "--help", "-h", "--version", "-v"]);
 const flags = new Set(argv.filter((a) => a.startsWith("-")));
 const isWin = process.platform === "win32";
 
@@ -51,11 +51,13 @@ Usage:  runit [folder] [--no-open] [--dry]
   --safe           install without running dependency install scripts (more careful, some packages may need them)
   --clean-env      give the project only a short list of environment variables (add more with --env=NAME,NAME)
   --verbose        show detailed detection and runtime diagnostics
+  --docker         prefer running in Docker (docker-compose or Dockerfile) instead of installing host dependencies
+  --no-docker      do not use Docker even if docker-compose.yml or Dockerfile exists
   --version        print the version
 
 Supports: Node/React/Next/Vite/Angular, Python (Django, FastAPI, Flask,
 Streamlit, Gradio, Litestar), Go, Java (Maven/Gradle), PHP/Laravel, Rust,
-Ruby/Rails, static HTML, Docker Compose. Frontend + backend folders run together.
+Ruby/Rails, static HTML, Docker Compose, Dockerfile. Frontend + backend folders run together.
 Note: runit runs the project's own code and installs its dependencies,
 exactly like doing it by hand. Only use it on projects you trust.`);
   process.exit(0);
@@ -75,6 +77,8 @@ let approved = flags.has("--yes") || flags.has("-y"); // needed before using a p
 const CLEAN_ENV = flags.has("--clean-env");
 const EXTRA_ENV = new Set([...flags].filter((f) => f.startsWith("--env=")).flatMap((f) => f.slice(6).split(",")));
 const VERBOSE = flags.has("--verbose") || process.env.RUNIT_VERBOSE === "1";
+const DOCKER = flags.has("--docker");
+const NO_DOCKER = flags.has("--no-docker");
 const debug = (topic, ...msg) => {
   if (VERBOSE) console.log(`${paint(90, `[runit:debug:${topic}]`)} ${msg.join(" ")}`);
 };
@@ -779,16 +783,64 @@ function detectStatic(d) {
   return { cwd: d, label: "Static site", kind: "frontend", port: 3000, needs: [], steps: [], static: true };
 }
 
+function findComposePort(text) {
+  const matches = [...text.matchAll(/(?:ports:\s*(?:\r?\n\s*-\s*["']?|\s*-\s*)|["'])(\d{2,5}):(\d{2,5})["']?/gi)];
+  if (!matches.length) return null;
+  const webPorts = [3000, 8080, 8000, 5000, 5173, 4200, 80, 443];
+  const hostPorts = matches.map((m) => Number(m[1])).filter((p) => p > 0 && p <= 65535);
+  return webPorts.find((wp) => hostPorts.includes(wp)) || hostPorts[0] || null;
+}
+
 function detectCompose(d) {
-  if (!["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"].some((f) => exists(d, f))) return null;
+  const f = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"].find((x) => exists(d, x));
+  if (!f) return null;
+  const content = readText(d, f);
+  const port = findComposePort(content);
   return {
-    cwd: d, label: "Docker Compose", kind: "backend", port: null, needs: ["docker"], steps: [],
+    cwd: d, label: "Docker Compose", kind: "backend", port, needs: ["docker"], steps: [],
     run: sh("docker", ["compose", "up", "--build"]),
+    compose: true,
+  };
+}
+
+function detectDockerfile(d) {
+  const f = ["Dockerfile", "Dockerfile.dev", "docker/Dockerfile"].find((x) => exists(d, x));
+  if (!f) return null;
+  const content = readText(d, f);
+  const exp = content.match(/^EXPOSE\s+(\d+)/im);
+  const port = exp ? Number(exp[1]) : 8080;
+  const rawName = path.basename(path.resolve(d)).toLowerCase().replace(/[^a-z0-9_.-]/g, "") || "app";
+  const tag = `runit-${rawName}`;
+  const containerName = `runit-${rawName}-${RUN_ID}`;
+  return {
+    cwd: d, label: "Dockerfile", kind: "backend", port, needs: ["docker"],
+    steps: [
+      { cmd: "docker", args: ["build", "-t", tag, "-f", f, "."], cwd: d, shell: isWin, action: "build", label: "building Docker image" },
+    ],
+    run: sh("docker", ["run", "--rm", "--name", containerName, "-p", `${port}:${port}`, tag]),
+    dockerfile: true,
+    containerName,
   };
 }
 
 function detect(d) {
   debug("scan", "checking folder:", d);
+  const compose = !NO_DOCKER ? detectCompose(d) : null;
+  const dockerfile = !NO_DOCKER ? detectDockerfile(d) : null;
+
+  if (DOCKER) {
+    if (compose) return [compose];
+    if (dockerfile) return [dockerfile];
+    throw new Err(`No Docker configuration found in ${d} (looked for docker-compose.yml or Dockerfile).`);
+  }
+
+  // When Docker Compose exists and Docker is available, prioritize the containerized environment
+  // over downloading and compiling host dependencies (avoiding dependency conflicts and missing services)
+  if (compose && !NO_DOCKER && hasCmd("docker")) {
+    debug("scan", "Docker Compose found in", d, "; prioritizing containerized environment over host dependencies");
+    return [compose];
+  }
+
   const node = detectNode(d);
   const py = detectPython(d);
   const out = [];
@@ -799,11 +851,11 @@ function detect(d) {
     else if (py.strong) out.push(py);
     else out.push(node);
   } else if (node || py) out.push(node || py);
-  const other = [detectGo, detectJava, detectPhp, detectRust, detectRuby, detectStatic, detectCompose]
+  const other = [detectGo, detectJava, detectPhp, detectRust, detectRuby, detectStatic]
     .map((f) => f(d))
     .find(Boolean);
   if (out.length) {
-    if (other && !other.static && !other.compose && out.some((p) => p.known)) out.push(other); // e.g. Laravel + Vite
+    if (other && !other.static && out.some((p) => p.known)) out.push(other); // e.g. Laravel + Vite
     const rel = path.relative(root, d) || ".";
     [node, py, other]
       .filter((p) => p && !out.includes(p))
@@ -811,8 +863,16 @@ function detect(d) {
     debug("scan", "found services in", d, ":", out.map((p) => p.label).join(", "));
     return out;
   }
-  if (other) debug("scan", "found service in", d, ":", other.label);
-  return other ? [other] : [];
+  if (other) {
+    debug("scan", "found service in", d, ":", other.label);
+    return [other];
+  }
+
+  // If no host stack matched, but Docker Compose or Dockerfile exists:
+  if (compose) return [compose];
+  if (dockerfile && !NO_DOCKER) return [dockerfile];
+
+  return [];
 }
 
 const SKIP = new Set(["node_modules", "venv", "env", "dist", "build", "target", "vendor", "docs", "test", "tests", "examples", "__pycache__"]);
@@ -1135,6 +1195,7 @@ const guardSend = (line) => {
   try { guardian && guardian.stdin.write(line + "\n"); } catch {}
 };
 const serviceUrls = new Map();
+const activeDockerServices = [];
 const created = []; // files and folders runit added to the project
 const RUN_FILE = () => path.join(STAMP_DIR, `run-${process.pid}.json`);
 function procStart(pid) {
@@ -1258,6 +1319,13 @@ async function shutdown(code = 0) {
   const trees = list.flatMap((c) => (c.pid ? treePids(c.pid) : []));
   if (list.length) console.log(`\n${paint(36, "[runit]")} Stopping...`);
   list.forEach((c) => killGroup(c, "SIGTERM"));
+  for (const dp of activeDockerServices) {
+    if (dp.compose) {
+      try { spawnSync("docker", ["compose", "down"], { cwd: dp.cwd, stdio: "ignore" }); } catch {}
+    } else if (dp.containerName) {
+      try { spawnSync("docker", ["stop", dp.containerName], { stdio: "ignore" }); } catch {}
+    }
+  }
   const end = Date.now() + (code === 129 ? 700 : 2000); // terminal closed: hurry; otherwise let servers finish cleanly
   while (Date.now() < end && list.some(groupAlive)) await sleep(50);
   list.filter(groupAlive).forEach((c) => killGroup(c, "SIGKILL")); // a server that ignores SIGTERM (even if npm/sh already exited)
@@ -2006,6 +2074,7 @@ async function launch(plan, multi) {
 
   alive_services++;
   debug("launch", "starting", plan.name, `(${plan.label})`, "->", plan.run.cmd, plan.run.args.join(" "));
+  if (plan.compose || plan.dockerfile) activeDockerServices.push(plan);
   const child = spawnX(spawn, plan.run, {
     cwd: plan.cwd,
     env: { ...runEnv(), ...(plan.run.env || {}), RUNIT_ACTIVE: "1", RUNIT_RUN_ID: RUN_ID, FORCE_COLOR: "1", PYTHONUNBUFFERED: "1", BROWSER: "none" },
@@ -2015,7 +2084,7 @@ async function launch(plan, multi) {
   track(child);
 
   const owns = async (port) => {
-    if (plan.label === "Docker Compose") return true; // the ports belong to Docker, not to our process tree
+    if (plan.label === "Docker Compose" || plan.label === "Dockerfile") return true; // the ports belong to Docker, not to our process tree
     let mine = null;
     for (let i = 0; i < 6 && !plan.closed; i++) {
       mine = ownedPorts(child.pid);
@@ -2253,10 +2322,10 @@ async function confirmPlans(plans) {
       : exists(root, "package.json")
       ? "Found package.json, but it has no dev/start/serve script (or it is a library), so there is nothing to run.\n"
       : exists(root, "Dockerfile")
-      ? "Found a Dockerfile but no docker-compose file. Try: docker build -t app . && docker run -p 8080:8080 app\n"
+      ? "Found a Dockerfile, but Docker is not installed or available on PATH. Install Docker to run containerized projects.\n"
       : "";
     throw new Err(
-      why + "Couldn't recognise this project.\nSupported: Node/React/Next/Vite, Python (Django/FastAPI/Flask/Streamlit), Go, Java, PHP/Laravel, Rust, Ruby/Rails, static HTML, Docker Compose."
+      why + "Couldn't recognise this project.\nSupported: Node/React/Next/Vite/Angular, Python (Django/FastAPI/Flask/Streamlit/Gradio/Litestar), Go, Java, PHP/Laravel, Rust, Ruby/Rails, static HTML, Docker Compose, Dockerfile."
     );
   }
 
