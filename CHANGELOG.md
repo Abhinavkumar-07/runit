@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.1
+## 0.8.0
 - **AI / ML Frameworks**: added native detection and default port (7860) for Gradio (`gr.Interface`, `gr.Blocks`, `gr.ChatInterface`), and support for Litestar ASGI applications.
 - **Modern Python Lockfiles**: added lockfile change tracking (`poetry.lock`, `uv.lock`, `pdm.lock`) into installation stamp checks so environment updates are triggered automatically.
 - **Actionable Runtime Diagnostics**:
@@ -16,7 +16,12 @@
 - **Environment Templates**: expanded automatic template copying to support `.env.dist`, `.env.local.example`, and `.env.development`.
 - **CLI Diagnostics**: added `--verbose` CLI flag and structured debug output (`[runit:debug:<topic>]`).
 - **PyPI Names**: expanded module-to-package mappings for `fitz` (`pymupdf`), `faiss` (`faiss-cpu`), `pptx` (`python-pptx`), `torchvision`, `torchaudio`, `websocket`, `telegram` (`python-telegram-bot`), `pydantic_settings`, and `OpenGL` (`PyOpenGL`).
-- **Monorepos**: full support for npm, pnpm, yarn, and Bun workspace member discovery (`workspaces`, `pnpm-workspace.yaml`, and `lerna.json`), with pre-run UI build support and cached builds.
+
+## 0.7.1
+- **Monorepos**: full support for npm, pnpm, yarn, and Bun workspace member discovery (`workspaces`, `pnpm-workspace.yaml`, and `lerna.json`).
+- **Pre-run UI build**: automatically builds unbuilt frontend packages in monorepos (e.g. `@countersign/web`) before starting backend servers that serve static assets.
+- **Concurrent workspaces**: discovers and concurrently runs decoupled frontend (e.g. Vite) and backend services across monorepo members.
+- **Cached builds**: skips re-building frontend UI if build output directories (`dist`, `build`, etc.) already exist.
 
 ## 0.7.0
 - Refactor: organized all module-level constants into a unified section to eliminate temporal-dead-zone risks.
