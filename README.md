@@ -93,20 +93,23 @@ runit [folder] [options]
 
 | Stack | Detection Method | Execution Command |
 |---|---|---|
-| **Next.js, Nuxt, Astro, Vite, SvelteKit, Remix, Angular, CRA** | `package.json` dependencies & scripts | `dev`, `develop`, `start`, or `serve` script via detected package manager |
-| **Express, Fastify, NestJS, Koa, Node.js** | `package.json` scripts or server entry point (`server.js`, `index.js`, `app.js`) | Package script or `node <entry>` |
-| **FastAPI, Litestar** | `FastAPI(` or `Litestar(` in Python files, or dependencies | `uvicorn <module>:app` |
+| **Next.js, Nuxt, Astro, Vite, SvelteKit, Remix, Angular, CRA, SolidStart, Qwik** | `package.json` dependencies & scripts | `dev`, `develop`, `start`, or `serve` script via detected package manager |
+| **Express, Fastify, NestJS, Koa, Hono, AdonisJS, Strapi, Node.js** | `package.json` scripts or server entry point (`server.js`, `index.js`, `src/server.js`) | Package script or `node <entry>` |
+| **FastAPI, Litestar, Sanic, Tornado, Bottle, aiohttp** | Source code imports / application declarations or dependencies | `uvicorn <module>:app` or `python <entry>` |
 | **Django** | `manage.py` | `python manage.py runserver` |
 | **Flask** | `Flask(` / `create_app()` in code or `flask` dependency | `flask run` or `python <entry>` |
 | **Streamlit, Gradio** | `import streamlit` or `import gradio` / `gr.Interface` | Headless Streamlit runner or `python <entry>` (port 7860) |
-| **Python Script / Standalone** | `app.py`, `main.py`, `server.py`, etc. | `python <file>` inside managed virtual environment |
+| **Python Script / Standalone** | `app.py`, `main.py`, `application.py`, `src/app.py`, etc. | `python <file>` inside managed virtual environment |
+| **.NET / C# / F#** | `*.csproj`, `*.fsproj`, `*.sln` | `dotnet restore` && `dotnet run` (port 5000) |
+| **Deno** | `deno.json`, `deno.jsonc`, `deno.lock`, or `main.ts` | `deno task dev` or `deno run -A <entry>` (port 8000) |
 | **Go** | `go.mod`, standalone `main.go`, `cmd/*`, or `server/main.go` | `go run <entry>` |
 | **Rust** | `Cargo.toml`, workspaces, `src/main.rs`, or `src/bin/*` | `cargo run` or `cargo run --bin <name>` |
-| **Java (Maven / Gradle)** | `pom.xml`, `build.gradle`, or wrapper scripts | `mvn spring-boot:run` / `gradle bootRun` |
+| **Java (Spring Boot, Quarkus, Micronaut)** | `pom.xml`, `build.gradle`, or Maven/Gradle wrappers | `spring-boot:run`, `quarkus:dev`, `mn:run` |
 | **PHP & Laravel** | `artisan`, `composer.json`, `index.php` | `php artisan serve` or `php -S localhost:8000` |
-| **Ruby on Rails / Rack** | `Gemfile`, `config.ru` | `bin/rails server` or `bundle exec rackup` |
-| **Static HTML** | `index.html` | Built-in zero-dependency HTTP server with local routing |
-| **Docker Compose** | `docker-compose.yml` or `compose.yaml` | `docker compose up` |
+| **Ruby (Rails, Sinatra, Rack)** | `Gemfile`, `config.ru`, `app.rb` with Sinatra | `bin/rails server`, `ruby app.rb`, or `bundle exec rackup` |
+| **Elixir & Phoenix** | `mix.exs` | `mix deps.get` && `mix phx.server` (port 4000) |
+| **Static HTML** | `index.html` or `public/index.html` | Built-in zero-dependency HTTP server with local routing |
+| **Docker Compose & Dockerfile** | `docker-compose.yml`, `compose.yaml`, `Dockerfile` | `docker compose up` or `docker build` && `docker run` |
 
 ---
 

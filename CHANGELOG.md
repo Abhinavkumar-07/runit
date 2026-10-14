@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.1
+- **.NET Support**: added native detection and execution for C# and F# projects (`*.csproj`, `*.fsproj`, `*.sln`) running `dotnet run` on port 5000 with automatic `dotnet restore`.
+- **Deno Support**: added native detection for `deno.json`, `deno.jsonc`, and Deno entry scripts, executing `deno task <dev|start|serve>` or `deno run -A <entry>` on default port 8000.
+- **Java Ecosystem Expansion**:
+  - Added native detection and dev goals for Quarkus (`./mvnw quarkus:dev` or `./gradlew quarkusDev`).
+  - Added native detection and dev goals for Micronaut (`./mvnw mn:run` or `./gradlew run`).
+- **Elixir & Phoenix Support**: added native detection for `mix.exs` projects running `mix phx.server` (port 4000) with `mix deps.get`.
+- **Ruby Sinatra Support**: added native detection for Sinatra apps (`Gemfile` with `sinatra` and `app.rb` / `server.rb`) running `bundle exec ruby <file>` on port 4567.
+- **Modern Python Frameworks**:
+  - Added native detection for Sanic (port 8000), Tornado (port 8888), Bottle (port 8080), and aiohttp (port 8080).
+  - Expanded Python entry file recognition: `application.py`, `src/app.py`, `src/server.py`, `wsgi.py`, `asgi.py`, `web.py`, and `index.py`.
+  - Expanded requirement file recognition to include development requirement sets (`requirements/dev.txt`, `requirements/local.txt`, `requirements-dev.txt`, `dev-requirements.txt`).
+- **Modern Node.js Frameworks**:
+  - Added native detection and ports for Hono (port 3000), AdonisJS (port 3333), Strapi (port 1337), SolidStart, Qwik, Docusaurus, and VitePress.
+  - Expanded script detection to recognize `start:dev`, `dev:server`, `server`, and `start:local`.
+  - Expanded entry point search to include `src/server.js`, `src/index.js`, `src/app.js`, and `src/main.js`.
+- **Static Site Support**: enhanced static file serving to automatically detect and serve from `public/index.html` as well as root `index.html`.
+- **Monorepo Discovery**: expanded fallback directory search in workspace projects to discover `apps/*` and `services/*`.
+- **Broadened Port Detection**: regex updated from `\d{4,5}` to `\d{2,5}` to capture standard web ports like 80 and 443.
+- **Database Connection Diagnostics**: added offline error hints for Elasticsearch (port 9200), Meilisearch (port 7700), and RabbitMQ (port 5672).
+
 ## 0.8.0
 - **Docker Compose Prioritization**: when `docker-compose.yml` (or `compose.yaml`) exists and Docker is available, `runit` prioritizes the containerized stack over downloading and compiling host dependencies (`npm install` / `pip install`), preventing dependency conflicts and missing service errors.
 - **Dockerfile Support**: added native detection and execution for standalone `Dockerfile` / `Dockerfile.dev` projects (builds image and runs container with host port binding).

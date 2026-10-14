@@ -441,4 +441,117 @@ CMD ["echo", "running"]
   assert.match(r.out, /docker build/);
 });
 
+test(".NET project detection: .csproj and .fsproj", () => {
+  const csharpDir = project({
+    "MyApp.csproj": `<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>`,
+    "Program.cs": `Console.WriteLine("Hello World");`,
+  });
+  const rCs = once([csharpDir, "--dry"]);
+  assert.strictEqual(rCs.code, 0);
+  assert.match(rCs.out, /\.NET/);
+  assert.match(rCs.out, /dotnet run/);
+
+  const fsharpDir = project({
+    "MyApp.fsproj": `<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>`,
+  });
+  const rFs = once([fsharpDir, "--dry"]);
+  assert.strictEqual(rFs.code, 0);
+  assert.match(rFs.out, /F# \(\.NET\)/);
+  assert.match(rFs.out, /dotnet run/);
+});
+
+test("Deno project detection: deno.json tasks and main.ts", () => {
+  const denoDir = project({
+    "deno.json": JSON.stringify({
+      tasks: {
+        dev: "deno run -A server.ts",
+      },
+    }),
+    "server.ts": `Deno.serve((_req) => new Response("Hello from Deno"));`,
+  });
+  const r = once([denoDir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /Deno/);
+  assert.match(r.out, /deno task dev/);
+});
+
+test("Java Quarkus and Micronaut detection in pom.xml and build.gradle", () => {
+  const quarkusDir = project({
+    "pom.xml": `<project><dependencies><dependency><groupId>io.quarkus</groupId><artifactId>quarkus-resteasy</artifactId></dependency></dependencies></project>`,
+  });
+  const rQ = once([quarkusDir, "--dry"]);
+  assert.strictEqual(rQ.code, 0);
+  assert.match(rQ.out, /Quarkus/);
+  assert.match(rQ.out, /quarkus:dev/);
+
+  const micronautDir = project({
+    "pom.xml": `<project><dependencies><dependency><groupId>io.micronaut</groupId><artifactId>micronaut-http-server-netty</artifactId></dependency></dependencies></project>`,
+  });
+  const rM = once([micronautDir, "--dry"]);
+  assert.strictEqual(rM.code, 0);
+  assert.match(rM.out, /Micronaut/);
+  assert.match(rM.out, /mn:run/);
+});
+
+test("Ruby Sinatra detection: Gemfile with sinatra and app.rb", () => {
+  const sinatraDir = project({
+    "Gemfile": `source 'https://rubygems.org'\ngem 'sinatra'\n`,
+    "app.rb": `require 'sinatra'\nget '/' do\n  'Hello world!'\nend\n`,
+  });
+  const r = once([sinatraDir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /Sinatra/);
+  assert.match(r.out, /bundle exec ruby app\.rb/);
+});
+
+test("Python modern frameworks: Sanic, Tornado, Bottle and entry points", () => {
+  const sanicDir = project({
+    "requirements.txt": "sanic\n",
+    "app.py": `from sanic import Sanic\napp = Sanic("my_app")\n`,
+  });
+  const rSanic = once([sanicDir, "--dry"]);
+  assert.strictEqual(rSanic.code, 0);
+  assert.match(rSanic.out, /Sanic/);
+
+  const tornadoDir = project({
+    "requirements.txt": "tornado\n",
+    "main.py": `import tornado.web\napp = tornado.web.Application([])\n`,
+  });
+  const rTornado = once([tornadoDir, "--dry"]);
+  assert.strictEqual(rTornado.code, 0);
+  assert.match(rTornado.out, /Tornado/);
+
+  const bottleDir = project({
+    "requirements.txt": "bottle\n",
+    "application.py": `from bottle import route, run\n@route('/')\ndef index(): return "hi"\n`,
+  });
+  const rBottle = once([bottleDir, "--dry"]);
+  assert.strictEqual(rBottle.code, 0);
+  assert.match(rBottle.out, /Bottle/);
+});
+
+test("Node.js modern frameworks and start scripts: Hono and start:dev", () => {
+  const honoDir = project({
+    "package.json": JSON.stringify({
+      dependencies: { hono: "^4.0.0" },
+      scripts: { "start:dev": "node server.js" },
+    }),
+    "server.js": SERVER,
+  });
+  const r = once([honoDir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /Hono/);
+  assert.match(r.out, /start:dev/);
+});
+
+test("Static site detection with public/index.html", () => {
+  const staticDir = project({
+    "public/index.html": `<!DOCTYPE html><html><body><h1>Static in Public</h1></body></html>`,
+  });
+  const r = once([staticDir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /Static site/);
+});
+
+
 

@@ -55,9 +55,10 @@ Usage:  runit [folder] [--no-open] [--dry]
   --no-docker      do not use Docker even if docker-compose.yml or Dockerfile exists
   --version        print the version
 
-Supports: Node/React/Next/Vite/Angular, Python (Django, FastAPI, Flask,
-Streamlit, Gradio, Litestar), Go, Java (Maven/Gradle), PHP/Laravel, Rust,
-Ruby/Rails, static HTML, Docker Compose, Dockerfile. Frontend + backend folders run together.
+Supports: Node/React/Next/Vite/Angular/Adonis/Hono, Python (Django, FastAPI,
+Flask, Streamlit, Gradio, Litestar, Sanic, Tornado), Go, Java (Maven/Gradle/
+Spring/Quarkus/Micronaut), .NET (C#/F#), PHP/Laravel, Rust, Ruby (Rails/Sinatra),
+Deno, Elixir/Phoenix, static HTML, Docker Compose, Dockerfile. Frontend + backend folders run together.
 Note: runit runs the project's own code and installs its dependencies,
 exactly like doing it by hand. Only use it on projects you trust.`);
   process.exit(0);
@@ -135,6 +136,10 @@ const HINT_PKG = {
   cargo: ["Rustlang.Rustup", "rustup", "cargo", "https://rustup.rs"],
   ruby: [null, "ruby", "ruby-full", "https://www.ruby-lang.org/en/downloads"],
   docker: ["Docker.DockerDesktop", "--cask docker", "docker.io", "https://docs.docker.com/get-docker"],
+  dotnet: ["Microsoft.DotNet.SDK.8", "dotnet-sdk", "dotnet-sdk-8.0", "https://dotnet.microsoft.com/download"],
+  deno: ["DenoLand.Deno", "deno", "deno", "https://deno.land"],
+  elixir: [null, "elixir", "elixir", "https://elixir-lang.org/install.html"],
+  mix: [null, "elixir", "elixir", "https://elixir-lang.org/install.html"],
 };
 function buildHints() {
   const out = {
@@ -189,6 +194,13 @@ const FRAMEWORKS = [
   ["express", "Express", null, "backend"],
   ["fastify", "Fastify", null, "backend"],
   ["koa", "Koa", null, "backend"],
+  ["hono", "Hono", 3000, "backend"],
+  ["@adonisjs/core", "AdonisJS", 3333, "backend"],
+  ["@strapi/strapi", "Strapi", 1337, "backend"],
+  ["solid-start", "SolidStart", 3000, "frontend"],
+  ["@builder.io/qwik", "Qwik", 5173, "frontend"],
+  ["@docusaurus/core", "Docusaurus", 3000, "frontend"],
+  ["vitepress", "VitePress", 5173, "frontend"],
 ];
 const LOCKS = [
   ["pnpm-lock.yaml", "pnpm"],
@@ -312,13 +324,14 @@ function detectNode(d) {
   }
   const scripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
   const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-  const script = ["dev", "develop", "start", "serve"].find((s) => scripts[s]);
+  const script = ["dev", "develop", "start", "serve", "start:dev", "dev:server", "server", "start:local"].find((s) => scripts[s]);
   const isSelf = (f) => path.resolve(d, f).toLowerCase() === __filename.toLowerCase(); // never run runit itself
   const looksLikeServer = (f) => /\.listen\s*\(|createServer\s*\(/.test(readText(d, f));
   const isLibrary = !!(pkg.main || pkg.module || pkg.exports || pkg.types || pkg.typings || pkg.bin || pkg.files);
-  const mainFile = [pkg.main, "server.js", "index.js", "app.js", "main.js"].find(
+  const mainCandidates = ["server.js", "index.js", "app.js", "main.js", "src/server.js", "src/index.js", "src/app.js", "src/main.js"];
+  const mainFile = [pkg.main, ...mainCandidates].find(
     (f) => typeof f === "string" && exists(d, f) && !isSelf(f) &&
-      (looksLikeServer(f) || (!isLibrary && ["server.js", "index.js", "app.js", "main.js"].includes(f)))
+      (looksLikeServer(f) || (!isLibrary && mainCandidates.includes(f)))
   );
   if (!script && !mainFile) return null;
 
@@ -528,11 +541,19 @@ function findPythonFramework(hasManage, srcText, depText, imports) {
   if (imports("gradio") || /\bgr\.(Interface|Blocks|ChatInterface)\b|\bgradio\.(Interface|Blocks|ChatInterface)\b/.test(srcText)) return "gradio";
   if (/\bFastAPI\s*\(/.test(srcText)) return "fastapi";
   if (/\bLitestar\s*\(/.test(srcText) || imports("litestar")) return "litestar";
+  if (/\bSanic\s*\(/.test(srcText) || imports("sanic")) return "sanic";
+  if (/\btornado\.web\.Application\s*\(/.test(srcText) || imports("tornado")) return "tornado";
+  if (/\bBottle\s*\(/.test(srcText) || imports("bottle") || /\bfrom\s+bottle\s+import\b/.test(srcText)) return "bottle";
+  if (/\bweb\.Application\s*\(/.test(srcText) && (imports("aiohttp") || depText.includes("aiohttp"))) return "aiohttp";
   if (/\bFlask\s*\(/.test(srcText) || (/def\s+create_app\s*\(/.test(srcText) && depText.includes("flask"))) return "flask";
   if (depText.includes("streamlit")) return "streamlit";
   if (depText.includes("gradio")) return "gradio";
   if (depText.includes("fastapi")) return "fastapi";
   if (depText.includes("litestar")) return "litestar";
+  if (depText.includes("sanic")) return "sanic";
+  if (depText.includes("tornado")) return "tornado";
+  if (depText.includes("bottle")) return "bottle";
+  if (depText.includes("aiohttp")) return "aiohttp";
   if (depText.includes("flask")) return "flask";
   return null;
 }
@@ -550,21 +571,25 @@ function resolvePyEnv(d, root) {
 }
 
 function detectPython(d) {
-  const files = ["app.py", "main.py", "server.py", "run.py", "api.py", "app/main.py", "src/main.py", "app/app.py"];
+  const files = [
+    "app.py", "main.py", "server.py", "run.py", "api.py", "application.py",
+    "app/main.py", "src/main.py", "app/app.py", "src/app.py", "src/server.py",
+    "wsgi.py", "asgi.py", "web.py", "index.py"
+  ];
   const hasManage = exists(d, "manage.py");
   const entry = files.find((f) => exists(d, f));
   if (!hasManage && !entry) return null; // a random .py file is not a project
 
   // dependency files: this folder, or a parent inside the scanned root (manage.py in src/, requirements at the repo root)
   const DEPFILES = [
-    "requirements.txt", "requirements/base.txt", "requirements/requirements.txt", "requirements/prod.txt", "requirements/production.txt",
+    "requirements.txt", "requirements/base.txt", "requirements/requirements.txt", "requirements/dev.txt", "requirements/local.txt", "requirements/prod.txt", "requirements/production.txt", "requirements-dev.txt", "dev-requirements.txt",
     "pyproject.toml", "Pipfile", "poetry.lock", "uv.lock", "pdm.lock"
   ];
   const depDir = ancestors(d).find((x) => DEPFILES.some((f) => exists(x, f))) || null;
   const warns = [];
   const depText = depDir ? stripPyComments(DEPFILES.map((f) => readText(depDir, f)).join("\n") + "\n" + readText(d, "setup.py")).toLowerCase() : "";
   const reqRel = depDir
-    ? ["requirements.txt", "requirements/base.txt", "requirements/requirements.txt", "requirements/prod.txt", "requirements/production.txt"].find((f) => exists(depDir, f))
+    ? ["requirements.txt", "requirements/base.txt", "requirements/requirements.txt", "requirements/dev.txt", "requirements/local.txt", "requirements/prod.txt", "requirements/production.txt", "requirements-dev.txt", "dev-requirements.txt"].find((f) => exists(depDir, f))
     : null;
   const reqFile = reqRel ? path.join(depDir, reqRel) : null;
   if (!depDir && (exists(d, "environment.yml") || exists(d, "environment.yaml")))
@@ -626,6 +651,25 @@ function detectPython(d) {
       if (!depText.includes("uvicorn") && !depText.includes("litestar")) extra.push("uvicorn");
       run = exe(PY, ["-m", "uvicorn", `${modOf(f)}:${v || "app"}`]);
     }
+  } else if (fw === "sanic") {
+    const f = srcFiles.find((x) => /\bSanic\s*\(/.test(src(x))) || entry;
+    const text = src(f);
+    const v = pickVar(text, "Sanic");
+    label = "Sanic"; port = 8000;
+    if (v && new RegExp(`\\b${v}\\.run\\s*\\(`).test(text)) run = exe(PY, [f]);
+    else run = exe(PY, ["-m", "sanic", `${modOf(f)}:${v || "app"}`]);
+  } else if (fw === "tornado") {
+    const f = srcFiles.find((x) => /\btornado\.web\.Application\s*\(/.test(src(x))) || entry;
+    label = "Tornado"; port = 8888;
+    run = exe(PY, [f]);
+  } else if (fw === "bottle") {
+    const f = srcFiles.find((x) => /\bBottle\s*\(/.test(src(x)) || /\brun\s*\(/.test(src(x))) || entry;
+    label = "Bottle"; port = 8080;
+    run = exe(PY, [f]);
+  } else if (fw === "aiohttp") {
+    const f = srcFiles.find((x) => /\bweb\.Application\s*\(/.test(src(x))) || entry;
+    label = "aiohttp"; port = 8080;
+    run = exe(PY, [f]);
   } else if (fw === "flask") {
     const f = srcFiles.find((x) => /\bFlask\s*\(/.test(src(x)) || /def\s+create_app\s*\(/.test(src(x))) || entry;
     const text = src(f);
@@ -664,23 +708,23 @@ function detectGo(d) {
   if (exists(d, "main.go")) {
     target = hasMod ? "." : "main.go";
   }
-  if (!target && hasMod) {
+  if (!target) {
     if (exists(d, "cmd/main.go")) {
-      target = "./cmd";
-    } else {
+      target = hasMod ? "./cmd" : "cmd/main.go";
+    } else if (exists(d, "cmd")) {
       const subs = safeReaddir(path.join(d, "cmd")).filter((n) => exists(d, `cmd/${n}/main.go`));
       const score = (n) =>
         (/ListenAndServe|http\.Serve|\.Listen\(|gin\.|echo\.New|fiber\.New/.test(readText(d, `cmd/${n}/main.go`)) ? 10 : 0) +
         (/^(web|server|api|app|http|serve|main)$/i.test(n) ? 5 : 0);
       subs.sort((a, b) => score(b) - score(a) || a.localeCompare(b));
-      if (subs.length) target = `./cmd/${subs[0]}`;
+      if (subs.length) target = hasMod ? `./cmd/${subs[0]}` : `cmd/${subs[0]}/main.go`;
     }
   }
-  if (!target && hasMod) {
+  if (!target) {
     const altDirs = ["server", "api", "backend", "app", "src"];
     for (const alt of altDirs) {
       if (exists(d, `${alt}/main.go`)) {
-        target = `./${alt}`;
+        target = hasMod ? `./${alt}` : `${alt}/main.go`;
         break;
       }
     }
@@ -693,28 +737,57 @@ function detectGo(d) {
   };
 }
 
+function detectDotnet(d) {
+  const files = safeReaddir(d);
+  const proj = files.find((f) => /\.(csproj|fsproj)$/i.test(f));
+  const sln = files.find((f) => /\.sln$/i.test(f));
+  if (!proj && !sln) return null;
+  const isFsharp = proj && proj.toLowerCase().endsWith(".fsproj");
+  return {
+    cwd: d, label: isFsharp ? "F# (.NET)" : ".NET", kind: "backend", port: 5000, needs: ["dotnet"],
+    steps: [sh("dotnet", ["restore"])],
+    run: sh("dotnet", ["run"]),
+  };
+}
+
 function detectJava(d) {
   if (exists(d, "pom.xml")) {
-    if (!readText(d, "pom.xml").includes("spring-boot")) return null;
+    const pom = readText(d, "pom.xml");
+    const spring = pom.includes("spring-boot");
+    const quarkus = /quarkus/i.test(pom);
+    const micronaut = /micronaut/i.test(pom);
+    if (!spring && !quarkus && !micronaut) return null;
     const w = isWin ? "mvnw.cmd" : "./mvnw";
     const wrapper = exists(d, isWin ? "mvnw.cmd" : "mvnw");
     const noExec = wrapper && !isWin && !canExec(d, "mvnw");
+    let goal = "spring-boot:run";
+    let label = "Spring Boot (Maven)";
+    if (quarkus) { goal = "quarkus:dev"; label = "Quarkus (Maven)"; }
+    else if (micronaut) { goal = "mn:run"; label = "Micronaut (Maven)"; }
     return {
-      cwd: d, label: "Spring Boot (Maven)", kind: "backend", port: 8080,
+      cwd: d, label, kind: "backend", port: 8080,
       needs: wrapper ? ["java"] : ["java", "mvn"], steps: [],
-      run: noExec ? sh("sh", ["./mvnw", "spring-boot:run"]) : sh(wrapper ? w : "mvn", ["spring-boot:run"]),
+      run: noExec ? sh("sh", ["./mvnw", goal]) : sh(wrapper ? w : "mvn", [goal]),
     };
   }
   const gradleFile = ["build.gradle", "build.gradle.kts"].find((f) => exists(d, f));
   if (gradleFile) {
-    const spring = readText(d, gradleFile).includes("spring-boot");
+    const content = readText(d, gradleFile);
+    const spring = content.includes("spring-boot");
+    const quarkus = /quarkus/i.test(content);
+    const micronaut = /micronaut/i.test(content);
     const w = isWin ? "gradlew.bat" : "./gradlew";
     const wrapper = exists(d, isWin ? "gradlew.bat" : "gradlew");
     const noExec = wrapper && !isWin && !canExec(d, "gradlew");
+    let task = "run";
+    let label = "Gradle app";
+    if (spring) { task = "bootRun"; label = "Spring Boot (Gradle)"; }
+    else if (quarkus) { task = "quarkusDev"; label = "Quarkus (Gradle)"; }
+    else if (micronaut) { task = "run"; label = "Micronaut (Gradle)"; }
     return {
-      cwd: d, label: spring ? "Spring Boot (Gradle)" : "Gradle app", kind: "backend", port: spring ? 8080 : null,
+      cwd: d, label, kind: "backend", port: 8080,
       needs: wrapper ? ["java"] : ["java", "gradle"], steps: [],
-      run: noExec ? sh("sh", ["./gradlew", spring ? "bootRun" : "run"]) : sh(wrapper ? w : "gradle", [spring ? "bootRun" : "run"]),
+      run: noExec ? sh("sh", ["./gradlew", task]) : sh(wrapper ? w : "gradle", [task]),
     };
   }
   return null;
@@ -770,17 +843,77 @@ function detectRust(d) {
 function detectRuby(d) {
   if (!exists(d, "Gemfile")) return null;
   const rails = exists(d, "bin/rails");
-  if (!rails && !exists(d, "config.ru")) return null;
+  const rack = exists(d, "config.ru");
+  const gemfile = readText(d, "Gemfile");
+  const sinatraFile = ["app.rb", "server.rb", "main.rb"].find((f) => exists(d, f));
+  const isSinatra = /gem\s*['"]sinatra['"]/i.test(gemfile) && sinatraFile;
+  if (!rails && !rack && !isSinatra) return null;
+  let label = "Rack app";
+  let port = 9292;
+  let run = sh("bundle", ["exec", "rackup"]);
+  if (rails) {
+    label = "Rails";
+    port = 3000;
+    run = sh("ruby", ["bin/rails", "server"]);
+  } else if (isSinatra) {
+    label = "Sinatra";
+    port = 4567;
+    run = sh("bundle", ["exec", "ruby", sinatraFile]);
+  }
   return {
-    cwd: d, label: rails ? "Rails" : "Rack app", kind: "backend", port: rails ? 3000 : 9292,
+    cwd: d, label, kind: "backend", port,
     needs: ["ruby", "bundle"], steps: [sh("bundle", ["install"])],
-    run: rails ? sh("ruby", ["bin/rails", "server"]) : sh("bundle", ["exec", "rackup"]),
+    run,
+  };
+}
+
+function detectDeno(d) {
+  const cfg = ["deno.json", "deno.jsonc"].find((f) => exists(d, f));
+  const hasLock = exists(d, "deno.lock");
+  const mainTs = ["main.ts", "server.ts", "app.ts", "index.ts", "mod.ts", "main.js", "server.js", "app.js", "index.js"].find((f) => exists(d, f));
+  if (!cfg && !hasLock && !mainTs) return null;
+  if (!cfg && !hasLock) {
+    const content = readText(d, mainTs);
+    if (!/import.*from\s*["'](https:\/\/|npm:|jsr:|node:)/.test(content) && !/Deno\./.test(content)) return null;
+  }
+  let task = null;
+  if (cfg) {
+    try {
+      const raw = readText(d, cfg).replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+      const j = JSON.parse(raw);
+      if (j && j.tasks && typeof j.tasks === "object") {
+        task = ["dev", "start", "serve", "run"].find((t) => j.tasks[t]);
+      }
+    } catch {}
+  }
+  const entry = mainTs || "main.ts";
+  const run = task ? sh("deno", ["task", task]) : sh("deno", ["run", "-A", entry]);
+  return {
+    cwd: d, label: "Deno", kind: "backend", port: 8000, needs: ["deno"],
+    steps: [],
+    run,
+  };
+}
+
+function detectElixir(d) {
+  if (!exists(d, "mix.exs")) return null;
+  const mix = readText(d, "mix.exs");
+  const phoenix = /phoenix/i.test(mix);
+  return {
+    cwd: d, label: phoenix ? "Phoenix" : "Elixir", kind: "backend", port: phoenix ? 4000 : null,
+    needs: ["elixir", "mix"],
+    steps: [sh("mix", ["deps.get"])],
+    run: phoenix ? sh("mix", ["phx.server"]) : sh("mix", ["run", "--no-halt"]),
   };
 }
 
 function detectStatic(d) {
-  if (!exists(d, "index.html") || exists(d, "package.json")) return null;
-  return { cwd: d, label: "Static site", kind: "frontend", port: 3000, needs: [], steps: [], static: true };
+  if (exists(d, "package.json")) return null;
+  const hasRoot = exists(d, "index.html");
+  const hasPublic = exists(d, "public/index.html");
+  if (!hasRoot && !hasPublic) return null;
+  const staticDir = !hasRoot && hasPublic ? path.join(d, "public") : d;
+  return { cwd: d, staticDir, label: "Static site", kind: "frontend", port: 3000, needs: [], steps: [], static: true };
 }
 
 function findComposePort(text) {
@@ -851,7 +984,7 @@ function detect(d) {
     else if (py.strong) out.push(py);
     else out.push(node);
   } else if (node || py) out.push(node || py);
-  const other = [detectGo, detectJava, detectPhp, detectRust, detectRuby, detectStatic]
+  const other = [detectGo, detectDotnet, detectJava, detectPhp, detectRust, detectRuby, detectDeno, detectElixir, detectStatic]
     .map((f) => f(d))
     .find(Boolean);
   if (out.length) {
@@ -880,13 +1013,6 @@ const HARD_SKIP = new Set(["node_modules", "venv", "env", "__pycache__", "dist",
 const LIB_DIRS = new Set(["packages", "libs", "lib", "libraries", "shared", "common"]);
 
 function stackHint(dir) {
-  const pom = readText(dir, "pom.xml");
-  const names = safeReaddir(dir);
-  if (/quarkus/i.test(pom)) return "This looks like a Quarkus project, which runit does not run yet. Try: ./mvnw quarkus:dev";
-  if (/micronaut/i.test(pom)) return "This looks like a Micronaut project, which runit does not run yet. Try: ./mvnw mn:run";
-  if (names.some((n) => /\.(csproj|sln|fsproj)$/i.test(n))) return "This looks like a .NET project, which runit does not run yet. Try: dotnet run";
-  if (exists(dir, "mix.exs")) return "This looks like an Elixir project, which runit does not run yet. Try: mix deps.get && mix phx.server";
-  if (exists(dir, "deno.json") || exists(dir, "deno.jsonc")) return "This looks like a Deno project, which runit does not run yet. Try: deno task dev";
   if (exists(dir, "pubspec.yaml")) return "This looks like a Dart/Flutter project, which runit does not run yet. Try: flutter run";
   return "";
 }
@@ -917,6 +1043,16 @@ function getWorkspaceGlobs(dir) {
   if (!globs.length && exists(dir, "packages")) {
     try {
       if (fs.statSync(path.join(dir, "packages")).isDirectory()) globs.push("packages/*");
+    } catch {}
+  }
+  if (!globs.length && exists(dir, "apps")) {
+    try {
+      if (fs.statSync(path.join(dir, "apps")).isDirectory()) globs.push("apps/*");
+    } catch {}
+  }
+  if (!globs.length && exists(dir, "services")) {
+    try {
+      if (fs.statSync(path.join(dir, "services")).isDirectory()) globs.push("services/*");
     } catch {}
   }
   return [...new Set(globs.filter((g) => g && !g.startsWith("!")))];
@@ -1890,7 +2026,7 @@ async function prepare(plan) {
 
 // ---------- running ----------
 const URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):\d+[^\s'"()<>\]]*/i;
-const PORT_RE = /(?:listening|running|started|serving|available|live)[^\n]*?(?:port\(?s?\)?[:\s]+|:)(\d{4,5})\b/i;
+const PORT_RE = /(?:listening|running|started|serving|available|live)[^\n]*?(?:port\(?s?\)?[:\s]+|:)(\d{2,5})\b/i;
 const NOISE = /debugger|inspector|devtools|ws:\/\/|wss:\/\/|live ?reload|hot ?reload|\bhmr\b|websocket|source ?map/i;
 const IGNORE_PORTS = new Set([9229, 9222, 5858, 35729, 24678]); // debugger / live-reload ports
 const claimed = new Map(); // port -> plan that owns it
@@ -1958,7 +2094,7 @@ function handleServiceLine(plan, line, tag, out, candidate, skip = 0) {
                   clean.match(/(?:connect|connection) (?:failed|refused|error).*(?:127\.0\.0\.1|localhost):(\d+)/i);
   if (dbMatch && !plan.hint) {
     const p = Number(dbMatch[1]);
-    const dbs = { 5432: "PostgreSQL", 5433: "PostgreSQL", 3306: "MySQL / MariaDB", 27017: "MongoDB", 6379: "Redis" };
+    const dbs = { 5432: "PostgreSQL", 5433: "PostgreSQL", 3306: "MySQL / MariaDB", 27017: "MongoDB", 6379: "Redis", 9200: "Elasticsearch", 7700: "Meilisearch", 5672: "RabbitMQ" };
     if (dbs[p]) {
       plan.hint = `The app failed to connect to local ${dbs[p]} (port ${p}). Make sure your database server is running.`;
     }
@@ -2067,8 +2203,9 @@ async function launch(plan, multi) {
   const announce = (url) => announceService(plan, url);
 
   if (plan.static) {
-    debug("launch", "serving static site in", plan.cwd, "port:", plan.port);
-    const { url } = await serveStatic(plan.cwd, plan.port);
+    const serveDir = plan.staticDir || plan.cwd;
+    debug("launch", "serving static site in", serveDir, "port:", plan.port);
+    const { url } = await serveStatic(serveDir, plan.port);
     return announce(url);
   }
 
