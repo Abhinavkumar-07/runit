@@ -79,6 +79,7 @@ runit [folder] [options]
 | `--clean-env` | Restrict environment variables passed to the application to an essential whitelist. |
 | `--env=FOO,BAR` | Whitelist specific environment variables when `--clean-env` is active. |
 | `--all` | Allow launching more than 5 services concurrently. |
+| `--verbose` | Output detailed internal scanner and runtime diagnostics (`[runit:debug:<topic>]`). |
 | `--version`, `-v` | Display the installed version. |
 | `--help`, `-h` | Display usage instructions and available options. |
 
@@ -92,13 +93,13 @@ runit [folder] [options]
 |---|---|---|
 | **Next.js, Nuxt, Astro, Vite, SvelteKit, Remix, Angular, CRA** | `package.json` dependencies & scripts | `dev`, `develop`, `start`, or `serve` script via detected package manager |
 | **Express, Fastify, NestJS, Koa, Node.js** | `package.json` scripts or server entry point (`server.js`, `index.js`, `app.js`) | Package script or `node <entry>` |
-| **FastAPI** | `FastAPI(` in Python files, or `fastapi` in requirements | `uvicorn <module>:app` |
+| **FastAPI, Litestar** | `FastAPI(` or `Litestar(` in Python files, or dependencies | `uvicorn <module>:app` |
 | **Django** | `manage.py` | `python manage.py runserver` |
 | **Flask** | `Flask(` / `create_app()` in code or `flask` dependency | `flask run` or `python <entry>` |
-| **Streamlit** | `import streamlit` or `streamlit_app.py` | `streamlit run <file> --server.headless true` |
+| **Streamlit, Gradio** | `import streamlit` or `import gradio` / `gr.Interface` | Headless Streamlit runner or `python <entry>` (port 7860) |
 | **Python Script / Standalone** | `app.py`, `main.py`, `server.py`, etc. | `python <file>` inside managed virtual environment |
-| **Go** | `go.mod`, entry point in root or `cmd/*` | `go run <entry>` |
-| **Rust** | `Cargo.toml` | `cargo run` |
+| **Go** | `go.mod`, standalone `main.go`, `cmd/*`, or `server/main.go` | `go run <entry>` |
+| **Rust** | `Cargo.toml`, workspaces, `src/main.rs`, or `src/bin/*` | `cargo run` or `cargo run --bin <name>` |
 | **Java (Maven / Gradle)** | `pom.xml`, `build.gradle`, or wrapper scripts | `mvn spring-boot:run` / `gradle bootRun` |
 | **PHP & Laravel** | `artisan`, `composer.json`, `index.php` | `php artisan serve` or `php -S localhost:8000` |
 | **Ruby on Rails / Rack** | `Gemfile`, `config.ru` | `bin/rails server` or `bundle exec rackup` |
@@ -110,9 +111,9 @@ runit [folder] [options]
 ## How It Works
 
 ### 1. Smart Delta Installations
-- **Python**: Reuses any healthy `.venv`, `venv`, or `env` directory. If dependencies are already satisfied, installation is skipped entirely. When creating a virtual environment, it enables `--system-site-packages` so heavy pre-installed packages (such as NumPy, PyTorch, or Pandas) do not need to be re-downloaded. Supports `requirements.txt` (including includes and nested files), `pyproject.toml` (PEP 621 & Poetry), `Pipfile`, and `setup.py`.
+- **Python**: Reuses any healthy `.venv`, `venv`, or `env` directory. If dependencies are already satisfied, installation is skipped entirely. When creating a virtual environment, it enables `--system-site-packages` so heavy pre-installed packages (such as NumPy, PyTorch, or Pandas) do not need to be re-downloaded. Supports `requirements.txt` (including includes and nested files), modern lockfiles (`uv.lock`, `poetry.lock`, `pdm.lock`), `pyproject.toml` (PEP 621 & Poetry), `Pipfile`, and `setup.py`.
 - **Node.js**: Automatically identifies the project's preferred package manager (`pnpm`, `yarn`, `bun`, or `npm`) based on lockfiles or `packageManager` declarations. Uses `npm ci` when clean lockfiles exist, falling back to `npm install --no-save` to ensure your repository files are never unintentionally modified.
-- **Environment Files**: Automatically creates `.env` from `.env.example` if no `.env` exists.
+- **Environment Files**: Automatically creates `.env` from template files (`.env.example`, `.env.dist`, `.env.local.example`, etc.) if no `.env` exists.
 
 ### 2. Multi-Service Monorepo Support
 If a project contains separated frontend and backend services (such as `frontend/` and `backend/`, `client/` and `server/`, or `apps/*`), `runit` runs them concurrently in a single terminal with organized, color-coded logging. If one service depends on another that is still booting up, connection failures receive an automatic grace-period retry.

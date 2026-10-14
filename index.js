@@ -11,7 +11,7 @@ const http = require("http");
 const { spawn, spawnSync } = require("child_process");
 
 const argv = process.argv.slice(2);
-const KNOWN_FLAGS = new Set(["--no-open", "--dry", "--dry-run", "--all", "--yes", "-y", "--safe", "--clean-env", "--help", "-h", "--version", "-v"]);
+const KNOWN_FLAGS = new Set(["--no-open", "--dry", "--dry-run", "--all", "--yes", "-y", "--safe", "--clean-env", "--verbose", "--help", "-h", "--version", "-v"]);
 const flags = new Set(argv.filter((a) => a.startsWith("-")));
 const isWin = process.platform === "win32";
 
@@ -50,11 +50,12 @@ Usage:  runit [folder] [--no-open] [--dry]
   --yes, -y        do not ask for confirmation before the first run of a project
   --safe           install without running dependency install scripts (more careful, some packages may need them)
   --clean-env      give the project only a short list of environment variables (add more with --env=NAME,NAME)
+  --verbose        show detailed detection and runtime diagnostics
   --version        print the version
 
 Supports: Node/React/Next/Vite/Angular, Python (Django, FastAPI, Flask,
-Streamlit), Go, Java (Maven/Gradle), PHP/Laravel, Rust, Ruby/Rails,
-static HTML, Docker Compose. Frontend + backend folders run together.
+Streamlit, Gradio, Litestar), Go, Java (Maven/Gradle), PHP/Laravel, Rust,
+Ruby/Rails, static HTML, Docker Compose. Frontend + backend folders run together.
 Note: runit runs the project's own code and installs its dependencies,
 exactly like doing it by hand. Only use it on projects you trust.`);
   process.exit(0);
@@ -73,6 +74,10 @@ const SAFE = flags.has("--safe");
 let approved = flags.has("--yes") || flags.has("-y"); // needed before using a package source the project chose itself
 const CLEAN_ENV = flags.has("--clean-env");
 const EXTRA_ENV = new Set([...flags].filter((f) => f.startsWith("--env=")).flatMap((f) => f.slice(6).split(",")));
+const VERBOSE = flags.has("--verbose") || process.env.RUNIT_VERBOSE === "1";
+const debug = (topic, ...msg) => {
+  if (VERBOSE) console.log(`${paint(90, `[runit:debug:${topic}]`)} ${msg.join(" ")}`);
+};
 
 // ---------- helpers ----------
 const exists = (d, f) => fs.existsSync(path.join(d, f));
@@ -196,6 +201,9 @@ const PYPI_NAMES = {
   dotenv: "python-dotenv", jwt: "pyjwt", MySQLdb: "mysqlclient", dateutil: "python-dateutil", skimage: "scikit-image",
   attr: "attrs", Crypto: "pycryptodome", OpenSSL: "pyopenssl", git: "gitpython", docx: "python-docx", magic: "python-magic",
   usb: "pyusb", zmq: "pyzmq", win32api: "pywin32", jose: "python-jose", socks: "pysocks", psycopg2: "psycopg2-binary",
+  fitz: "pymupdf", faiss: "faiss-cpu", pptx: "python-pptx", torchvision: "torchvision", torchaudio: "torchaudio",
+  websocket: "websocket-client", telegram: "python-telegram-bot", pydantic_settings: "pydantic-settings",
+  bio: "biopython", Bio: "biopython", OpenGL: "PyOpenGL",
 };
 
 const DENY_ENV = /^(AWS_|AZURE_|GOOGLE_APPLICATION|GCP_|GCLOUD_|GITLAB_|SLACK_|STRIPE_|DOCKER_|GITHUB_TOKEN$|GH_TOKEN$|SSH_AUTH_SOCK$|KUBECONFIG$)|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|CREDENTIAL/i;
@@ -513,10 +521,14 @@ function trustedVenv(e) {
 function findPythonFramework(hasManage, srcText, depText, imports) {
   if (hasManage) return "django";
   if (imports("streamlit")) return "streamlit";
+  if (imports("gradio") || /\bgr\.(Interface|Blocks|ChatInterface)\b|\bgradio\.(Interface|Blocks|ChatInterface)\b/.test(srcText)) return "gradio";
   if (/\bFastAPI\s*\(/.test(srcText)) return "fastapi";
+  if (/\bLitestar\s*\(/.test(srcText) || imports("litestar")) return "litestar";
   if (/\bFlask\s*\(/.test(srcText) || (/def\s+create_app\s*\(/.test(srcText) && depText.includes("flask"))) return "flask";
   if (depText.includes("streamlit")) return "streamlit";
+  if (depText.includes("gradio")) return "gradio";
   if (depText.includes("fastapi")) return "fastapi";
+  if (depText.includes("litestar")) return "litestar";
   if (depText.includes("flask")) return "flask";
   return null;
 }
@@ -540,7 +552,10 @@ function detectPython(d) {
   if (!hasManage && !entry) return null; // a random .py file is not a project
 
   // dependency files: this folder, or a parent inside the scanned root (manage.py in src/, requirements at the repo root)
-  const DEPFILES = ["requirements.txt", "requirements/base.txt", "requirements/requirements.txt", "requirements/prod.txt", "requirements/production.txt", "pyproject.toml", "Pipfile"];
+  const DEPFILES = [
+    "requirements.txt", "requirements/base.txt", "requirements/requirements.txt", "requirements/prod.txt", "requirements/production.txt",
+    "pyproject.toml", "Pipfile", "poetry.lock", "uv.lock", "pdm.lock"
+  ];
   const depDir = ancestors(d).find((x) => DEPFILES.some((f) => exists(x, f))) || null;
   const warns = [];
   const depText = depDir ? stripPyComments(DEPFILES.map((f) => readText(depDir, f)).join("\n") + "\n" + readText(d, "setup.py")).toLowerCase() : "";
@@ -588,11 +603,25 @@ function detectPython(d) {
     const f = ["streamlit_app.py", "app.py", "main.py"].find((x) => exists(d, x)) || entry;
     label = "Streamlit"; kind = "frontend"; port = 8501;
     run = exe(PY, ["-m", "streamlit", "run", f, "--server.headless", "true"]);
+  } else if (fw === "gradio") {
+    const f = ["app.py", "main.py", "gradio_app.py", "demo.py"].find((x) => exists(d, x)) || entry;
+    label = "Gradio"; kind = "frontend"; port = 7860;
+    run = exe(PY, [f]);
   } else if (fw === "fastapi") {
     const f = srcFiles.find((x) => /\bFastAPI\s*\(/.test(src(x))) || entry;
     if (!depText.includes("uvicorn")) extra.push("uvicorn");
     label = "FastAPI"; port = 8000;
     run = exe(PY, ["-m", "uvicorn", `${modOf(f)}:${pickVar(src(f), "FastAPI") || "app"}`]); // no --reload: it watches .venv and burns CPU
+  } else if (fw === "litestar") {
+    const f = srcFiles.find((x) => /\bLitestar\s*\(/.test(src(x))) || entry;
+    const text = src(f);
+    const v = pickVar(text, "Litestar");
+    label = "Litestar"; port = 8000;
+    if (v && new RegExp(`\\b${v}\\.run\\s*\\(`).test(text)) run = exe(PY, [f]);
+    else {
+      if (!depText.includes("uvicorn") && !depText.includes("litestar")) extra.push("uvicorn");
+      run = exe(PY, ["-m", "uvicorn", `${modOf(f)}:${v || "app"}`]);
+    }
   } else if (fw === "flask") {
     const f = srcFiles.find((x) => /\bFlask\s*\(/.test(src(x)) || /def\s+create_app\s*\(/.test(src(x))) || entry;
     const text = src(f);
@@ -615,7 +644,7 @@ function detectPython(d) {
   return {
     cwd: d, label, kind, port, needs: ["python"], steps: [], run, warns, risky: riskySrc ? "custom Python package source" : null,
     stamp: {
-      files: ["requirements.txt", "pyproject.toml", "setup.py", "Pipfile"],
+      files: ["requirements.txt", "pyproject.toml", "setup.py", "Pipfile", "poetry.lock", "uv.lock", "pdm.lock"],
       dirs: [sdir],
       abs: reqFile ? pyIncludes(reqFile) : [],
     },
@@ -626,20 +655,37 @@ function detectPython(d) {
 }
 
 function detectGo(d) {
-  if (!exists(d, "go.mod")) return null;
-  let target = exists(d, "main.go") ? "." : null;
-  if (!target) {
-    const subs = safeReaddir(path.join(d, "cmd")).filter((n) => exists(d, `cmd/${n}/main.go`));
-    const score = (n) =>
-      (/ListenAndServe|http\.Serve|\.Listen\(|gin\.|echo\.New|fiber\.New/.test(readText(d, `cmd/${n}/main.go`)) ? 10 : 0) +
-      (/^(web|server|api|app|http|serve|main)$/i.test(n) ? 5 : 0);
-    subs.sort((a, b) => score(b) - score(a) || a.localeCompare(b));
-    if (subs.length) target = `./cmd/${subs[0]}`;
+  const hasMod = exists(d, "go.mod");
+  let target = null;
+  if (exists(d, "main.go")) {
+    target = hasMod ? "." : "main.go";
+  }
+  if (!target && hasMod) {
+    if (exists(d, "cmd/main.go")) {
+      target = "./cmd";
+    } else {
+      const subs = safeReaddir(path.join(d, "cmd")).filter((n) => exists(d, `cmd/${n}/main.go`));
+      const score = (n) =>
+        (/ListenAndServe|http\.Serve|\.Listen\(|gin\.|echo\.New|fiber\.New/.test(readText(d, `cmd/${n}/main.go`)) ? 10 : 0) +
+        (/^(web|server|api|app|http|serve|main)$/i.test(n) ? 5 : 0);
+      subs.sort((a, b) => score(b) - score(a) || a.localeCompare(b));
+      if (subs.length) target = `./cmd/${subs[0]}`;
+    }
+  }
+  if (!target && hasMod) {
+    const altDirs = ["server", "api", "backend", "app", "src"];
+    for (const alt of altDirs) {
+      if (exists(d, `${alt}/main.go`)) {
+        target = `./${alt}`;
+        break;
+      }
+    }
   }
   if (!target) return null;
   return {
     cwd: d, label: "Go", kind: "backend", port: 8080, needs: ["go"],
-    steps: [sh("go", ["mod", "download"])], run: sh("go", ["run", target]),
+    steps: hasMod ? [sh("go", ["mod", "download"])] : [],
+    run: sh("go", ["run", target]),
   };
 }
 
@@ -706,6 +752,13 @@ function detectRust(d) {
     if (!bins.length) return null;
     bins.sort((a, b) => Number(b.web) - Number(a.web));
     args = ["run", "-p", bins[0].name];
+  } else if (!exists(d, "src/main.rs") && exists(d, "src/bin")) {
+    const bins = safeReaddir(path.join(d, "src", "bin")).filter((f) => f.endsWith(".rs"));
+    if (bins.length) {
+      const score = (n) => (/server|main|app|web|api/i.test(n) ? 5 : 0);
+      bins.sort((a, b) => score(b) - score(a) || a.localeCompare(b));
+      args = ["run", "--bin", bins[0].replace(/\.rs$/, "")];
+    }
   }
   return { cwd: d, label: "Rust", kind: "backend", port: null, needs: ["cargo"], steps: [], run: sh("cargo", args) };
 }
@@ -735,6 +788,7 @@ function detectCompose(d) {
 }
 
 function detect(d) {
+  debug("scan", "checking folder:", d);
   const node = detectNode(d);
   const py = detectPython(d);
   const out = [];
@@ -754,8 +808,10 @@ function detect(d) {
     [node, py, other]
       .filter((p) => p && !out.includes(p))
       .forEach((p) => notes.add(`also found ${p.label} in ${rel}, but it is ignored (not started). runit starts one main stack per folder; run it in a subfolder or start it yourself`));
+    debug("scan", "found services in", d, ":", out.map((p) => p.label).join(", "));
     return out;
   }
+  if (other) debug("scan", "found service in", d, ":", other.label);
   return other ? [other] : [];
 }
 
@@ -775,8 +831,157 @@ function stackHint(dir) {
   return "";
 }
 
+function getWorkspaceGlobs(dir) {
+  const globs = [];
+  try {
+    const pkg = JSON.parse(readText(dir, "package.json"));
+    if (Array.isArray(pkg.workspaces)) {
+      globs.push(...pkg.workspaces);
+    } else if (pkg.workspaces && Array.isArray(pkg.workspaces.packages)) {
+      globs.push(...pkg.workspaces.packages);
+    }
+  } catch {}
+  if (exists(dir, "pnpm-workspace.yaml")) {
+    const text = readText(dir, "pnpm-workspace.yaml");
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^\s*-\s*['"]?([^'"#\r\n]+)['"]?/);
+      if (m) globs.push(m[1].trim());
+    }
+  }
+  if (exists(dir, "lerna.json")) {
+    try {
+      const l = JSON.parse(readText(dir, "lerna.json"));
+      if (Array.isArray(l.packages)) globs.push(...l.packages);
+    } catch {}
+  }
+  if (!globs.length && exists(dir, "packages")) {
+    try {
+      if (fs.statSync(path.join(dir, "packages")).isDirectory()) globs.push("packages/*");
+    } catch {}
+  }
+  return [...new Set(globs.filter((g) => g && !g.startsWith("!")))];
+}
+
+function resolveWorkspaceDirs(rootDir, globs) {
+  const dirs = new Set();
+  for (const pattern of globs) {
+    const cleanPattern = pattern.replace(/[\\/]+$/, "");
+    if (!cleanPattern.includes("*")) {
+      const full = path.resolve(rootDir, cleanPattern);
+      if (exists(full, "package.json")) dirs.add(full);
+      continue;
+    }
+    const parts = cleanPattern.split(/[\\/]+/);
+    const starIdx = parts.findIndex((p) => p.includes("*"));
+    if (starIdx === -1) continue;
+    const baseDir = path.resolve(rootDir, parts.slice(0, starIdx).join(path.sep));
+    if (!fs.existsSync(baseDir)) continue;
+    try {
+      if (!fs.statSync(baseDir).isDirectory()) continue;
+    } catch { continue; }
+
+    const expand = (currentDir, idx) => {
+      if (idx >= parts.length) {
+        if (exists(currentDir, "package.json")) dirs.add(currentDir);
+        return;
+      }
+      const part = parts[idx];
+      const entries = safeReaddir(currentDir);
+      for (const entry of entries) {
+        if (entry.startsWith(".") || SKIP.has(entry)) continue;
+        const sub = path.join(currentDir, entry);
+        let st;
+        try { st = fs.statSync(sub); } catch { continue; }
+        if (!st.isDirectory()) continue;
+
+        if (part === "*" || part === "**") {
+          expand(sub, idx + 1);
+        } else if (part.includes("*")) {
+          const re = new RegExp("^" + part.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
+          if (re.test(entry)) expand(sub, idx + 1);
+        } else if (entry === part) {
+          expand(sub, idx + 1);
+        }
+      }
+    };
+    expand(baseDir, starIdx);
+  }
+  return [...dirs];
+}
+
 function discover(rootDir) {
   const own = detect(rootDir);
+  const wsGlobs = getWorkspaceGlobs(rootDir);
+  if (wsGlobs.length) {
+    const wsDirs = resolveWorkspaceDirs(rootDir, wsGlobs);
+    const wsPlans = [];
+    const unbuiltFrontendBuildSteps = [];
+
+    for (const wsDir of wsDirs) {
+      if (wsDir === rootDir) continue;
+      const detected = detect(wsDir) || [];
+      for (const p of detected) {
+        if (!p.libraryLike && !p.weak) wsPlans.push(p);
+      }
+
+      const pkgText = readText(wsDir, "package.json");
+      let wsPkg = null;
+      try { wsPkg = JSON.parse(pkgText); } catch {}
+      if (wsPkg && wsPkg.scripts && wsPkg.scripts.build) {
+        const wsDeps = { ...wsPkg.dependencies, ...wsPkg.devDependencies };
+        const isFrontend = FRAMEWORKS.some((f) => f[3] === "frontend" && wsDeps[f[0]]) ||
+                           wsDeps.react || wsDeps.vue || wsDeps.svelte ||
+                           /web|client|frontend|ui/i.test(path.basename(wsDir)) ||
+                           /web|client|frontend|ui/i.test(wsPkg.name || "");
+        const buildOutputs = ["dist", "build", "out", ".next", "public/dist", "public/build"];
+        const hasBuildOutput = buildOutputs.some((o) => exists(wsDir, o));
+        if (isFrontend && !hasBuildOutput) {
+          const { pm } = pickPackageManager(wsPkg, ancestors(wsDir));
+          unbuiltFrontendBuildSteps.push({
+            cmd: pm,
+            args: pm === "npm" || pm === "bun" ? ["run", "build"] : ["build"],
+            cwd: wsDir,
+            shell: isWin,
+            action: "build",
+            label: `building UI (${wsPkg.name || path.relative(rootDir, wsDir)})`,
+          });
+        }
+      }
+    }
+
+    const rootOrchestrates = own.some((p) =>
+      /\b(turbo|nx|lerna)\b|--workspaces\b|\bworkspaces\s+run\b|\bconcurrently\b/i.test(p.scriptText || "")
+    );
+
+    if (rootOrchestrates && own.length) {
+      if (unbuiltFrontendBuildSteps.length && own[0].steps) {
+        own[0].steps.push(...unbuiltFrontendBuildSteps);
+      }
+      return own;
+    }
+
+    if (own.length) {
+      const frontends = wsPlans.filter((p) => p.kind === "frontend" && p.cwd !== rootDir);
+      const combined = [...own];
+      for (const fe of frontends) {
+        if (!combined.some((p) => p.cwd === fe.cwd)) combined.push(fe);
+      }
+      if (unbuiltFrontendBuildSteps.length) {
+        const target = combined[0];
+        if (target && target.steps) target.steps.push(...unbuiltFrontendBuildSteps);
+      }
+      return combined;
+    }
+
+    if (wsPlans.length) {
+      if (unbuiltFrontendBuildSteps.length) {
+        const target = wsPlans.find((p) => p.kind === "backend") || wsPlans[0];
+        if (target && target.steps) target.steps.push(...unbuiltFrontendBuildSteps);
+      }
+      return wsPlans;
+    }
+  }
+
   if (own.length) return own;
   const scan = (skip, skipLibs) => {
     const found = [];
@@ -1285,7 +1490,7 @@ function serveStatic(dir, port, tries = 0) {
 
 function copyEnv(plan) {
   if (plan.static || exists(plan.cwd, ".env")) return;
-  const src = [".env.example", ".env.sample", ".env.template", "example.env", "env.example"].find((n) => exists(plan.cwd, n));
+  const src = [".env.example", ".env.sample", ".env.template", ".env.dist", ".env.local.example", ".env.development", "example.env", "env.example"].find((n) => exists(plan.cwd, n));
   if (!src) return;
   try {
     const st = fs.lstatSync(path.join(plan.cwd, src)); // a symlink or a huge file is not a real example file
@@ -1405,6 +1610,10 @@ function installHint(t) {
       : process.platform === "darwin"
       ? "A package must be compiled. Run: xcode-select --install"
       : "A package must be compiled. Install build tools, for example: sudo apt install build-essential python3-dev";
+  if (/ensurepip is not available|python3-venv|python3\.\d+-venv/i.test(t))
+    return "Your Python is missing the venv module. On Ubuntu/Debian, install it with: sudo apt install python3-venv";
+  if (/externally-managed-environment/i.test(t))
+    return "This Python environment is externally managed (PEP 668). runit isolates dependencies in a virtual environment.";
   if (/E401|E403|ENEEDAUTH|Unable to authenticate|401 Unauthorized|403 Forbidden/i.test(t))
     return "A package registry asked for a login. Check the project's .npmrc / pip settings (and any token it needs), or log in with: npm login";
   if (/ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|ECONNRESET|Temporary failure in name resolution|Network is unreachable|Connection (timed out|refused)|Max retries exceeded/i.test(t))
@@ -1431,7 +1640,8 @@ function runEnv() {
   return e;
 }
 function runStep(plan, step) {
-  say(`${plan.name}: ${cleanText([step.cmd, ...step.args].join(" "))}`);
+  const lbl = step.label ? `${step.label} -> ` : "";
+  say(`${plan.name}: ${lbl}${cleanText([step.cmd, ...step.args].join(" "))}`);
   return new Promise((resolve, reject) => {
     let tail = "";
     const child = spawnX(spawn, step, { cwd: step.cwd || plan.cwd, env: installEnv(), stdio: ["ignore", "inherit", "pipe"], detached: !isWin });
@@ -1559,11 +1769,16 @@ async function prepare(plan) {
     const st = readStamp(plan);
     const sameFiles = st && st.hash === hashOf(plan);
     const modulesOk = plan.hasModules() && plan.depsPresent();
+    const hasUnbuilt = (plan.steps || []).some((s) => s.action === "build");
     // a saved stamp that no longer matches = dependencies changed -> reinstall.
     // no stamp at all (new project for runit) -> trust node_modules only if it is clearly newer than the package files.
-    if (modulesOk && (sameFiles || (!st && plan.installed()))) {
+    if (!hasUnbuilt && modulesOk && (sameFiles || (!st && plan.installed()))) {
       if (!st) saveStamp(plan);
       return say(`${plan.name}: dependencies up to date, skipping install`);
+    }
+    if (hasUnbuilt && modulesOk && (sameFiles || (!st && plan.installed()))) {
+      say(`${plan.name}: dependencies up to date, skipping install`);
+      plan.steps = plan.steps.filter((s) => s.action === "build");
     }
   }
   const hadModules = plan.hasModules ? plan.hasModules() : true;
@@ -1592,7 +1807,13 @@ async function prepare(plan) {
         if (!ok && i + 1 < attempts.length) say(`${plan.name}: the lockfile does not match package.json, falling back to a normal install`);
       }
     }
-    if (!ok) throw lastErr;
+    if (!ok) {
+      if (s.action === "build") {
+        say(`${paint(33, "WARNING")} ${plan.name}: build step failed (${lastErr ? lastErr.message : "error"}). Continuing anyway.`);
+      } else {
+        throw lastErr;
+      }
+    }
     doneSteps.add(key);
   }
   if (!hadModules && plan.steps.length) created.push(path.join(path.relative(root, plan.cwd), "node_modules"));
@@ -1614,6 +1835,7 @@ function portOf(url) {
 }
 
 function announceService(plan, url) {
+  debug("port", "announcing", plan.name, "->", url);
   serviceUrls.set(plan.name, url);
   writeRun();
   const port = portOf(url);
@@ -1650,6 +1872,28 @@ function handleServiceLine(plan, line, tag, out, candidate, skip = 0) {
     plan.hint = other && other !== plan
       ? `This service wants port ${pm2[1]}, which ${other.name} is already using. Give one of them another port (for example PORT=${Number(pm2[1]) + 1} in its .env file).`
       : "A port this app needs is already used by another program (maybe a previous run is still open). Close it and run runit again.";
+  }
+  const acc = clean.match(/listen EACCES(?:: permission denied)? [^\s:]*:(\d+)/i) || clean.match(/permission denied.*bind.*:(\d+)/i);
+  if (acc && !plan.hint) {
+    const portNum = Number(acc[1]);
+    plan.hint = portNum < 1024
+      ? `Port ${portNum} is a privileged port (< 1024). Ports below 1024 require administrator/root privileges, or configure the app to use a port like 3000 or 8080.`
+      : `Permission denied while binding to port ${portNum}. Check your firewall, antivirus, or permissions.`;
+  }
+  if (!plan.hint && /ERR_OSSL_EVP_UNSUPPORTED|digital envelope routines::unsupported/i.test(clean)) {
+    plan.hint = "This project uses legacy OpenSSL crypto unsupported by newer Node.js versions. Try running with: NODE_OPTIONS=--openssl-legacy-provider runit";
+  }
+  if (!plan.hint && /Cannot connect to the Docker daemon|docker daemon is not running|Is the docker daemon running|error during connect.*docker/i.test(clean)) {
+    plan.hint = "Docker daemon is not running. Please start Docker Desktop (or run 'sudo systemctl start docker' on Linux) and try again.";
+  }
+  const dbMatch = clean.match(/ECONNREFUSED\s+(?:127\.0\.0\.1|localhost|::1):(\d+)/i) ||
+                  clean.match(/(?:connect|connection) (?:failed|refused|error).*(?:127\.0\.0\.1|localhost):(\d+)/i);
+  if (dbMatch && !plan.hint) {
+    const p = Number(dbMatch[1]);
+    const dbs = { 5432: "PostgreSQL", 5433: "PostgreSQL", 3306: "MySQL / MariaDB", 27017: "MongoDB", 6379: "Redis" };
+    if (dbs[p]) {
+      plan.hint = `The app failed to connect to local ${dbs[p]} (port ${p}). Make sure your database server is running.`;
+    }
   }
   const mm = clean.match(/ModuleNotFoundError: No module named '([\w.\-]+)'/);
   if (mm) {
@@ -1725,6 +1969,7 @@ function feedStream(stream, onLine, onPartial) {
 }
 
 async function pollForPort(plan, child, announce) {
+  debug("port", "polling ports for", plan.name, "pid:", child.pid);
   const t0 = Date.now();
   let told = false;
   await sleep(4000);
@@ -1754,11 +1999,13 @@ async function launch(plan, multi) {
   const announce = (url) => announceService(plan, url);
 
   if (plan.static) {
+    debug("launch", "serving static site in", plan.cwd, "port:", plan.port);
     const { url } = await serveStatic(plan.cwd, plan.port);
     return announce(url);
   }
 
   alive_services++;
+  debug("launch", "starting", plan.name, `(${plan.label})`, "->", plan.run.cmd, plan.run.args.join(" "));
   const child = spawnX(spawn, plan.run, {
     cwd: plan.cwd,
     env: { ...runEnv(), ...(plan.run.env || {}), RUNIT_ACTIVE: "1", RUNIT_RUN_ID: RUN_ID, FORCE_COLOR: "1", PYTHONUNBUFFERED: "1", BROWSER: "none" },
@@ -1958,7 +2205,10 @@ async function confirmPlans(plans) {
   console.log(`\n${paint(1, "This will run commands from this project on your computer:")}`);
   for (const p of fresh) {
     console.log(`\n  ${paint(1, p.name)} (${p.label})`);
-    for (const st of p.steps || []) console.log(`    install : ${cleanText([st.cmd, ...st.args].join(" "))}${st.cwd ? `   (in ${cleanText(path.relative(root, st.cwd) || ".")})` : ""}`);
+    for (const st of p.steps || []) {
+      const act = (st.action || "install").padEnd(7);
+      console.log(`    ${act} : ${cleanText([st.cmd, ...st.args].join(" "))}${st.cwd ? `   (in ${cleanText(path.relative(root, st.cwd) || ".")})` : ""}`);
+    }
     if (p.py && (p.py.reqArgs.length || p.py.extra.length)) console.log(`    install : pip install ${cleanText([...p.py.reqArgs, ...p.py.extra].join(" "))}`);
     if (p.scriptText) console.log(`    start   : ${cleanText([p.run.cmd, ...p.run.args].join(" "))}   -> runs: ${p.scriptText}`);
     else if (p.static) console.log("    start   : built-in static file server");
@@ -2013,7 +2263,7 @@ async function confirmPlans(plans) {
   // names, order (frontends first), colours
   const palette = [35, 33, 34, 32, 36];
   plans.forEach((p) => {
-    p.name = (path.relative(root, p.cwd) || path.basename(root)).replace(/[\x00-\x1f\x7f-\x9f]/g, "?");
+    p.name = (path.relative(root, p.cwd) || path.basename(root)).replace(/\\/g, "/").replace(/[\x00-\x1f\x7f-\x9f]/g, "?");
   });
   plans.forEach((p) => {
     if (plans.filter((o) => o.name === p.name).length > 1) p.name += `-${p.kind}`;
@@ -2033,6 +2283,7 @@ async function confirmPlans(plans) {
     const cmd = p.static ? "built-in static server" : [...Object.entries(p.run.env || {}).map(([k, v]) => `${k}=${v}`), p.run.cmd === "@py" ? "python" : p.run.cmd, ...p.run.args].join(" ");
     console.log(`   - ${p.name}: ${p.label}  ->  ${cleanText(cmd)}`);
     if (p.scriptText) console.log(`       that script runs: ${p.scriptText}`);
+    (p.steps || []).filter((s) => s.action === "build").forEach((b) => console.log(`       ${paint(36, "build step")} ${cleanText([b.cmd, ...b.args].join(" "))}${b.cwd ? ` (in ${cleanText(path.relative(root, b.cwd) || ".")})` : ""}`));
     (p.hooks || []).forEach((h) => console.log(`       ${paint(33, "install hook")} ${h}`));
     (p.warns || []).forEach((w) => console.log(`       ${paint(33, "WARNING")}: ${w}`));
   });

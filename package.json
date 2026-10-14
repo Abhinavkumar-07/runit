@@ -1,6 +1,6 @@
 {
   "name": "runit-dev",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Run any project with one command: detects the stack, installs only what is missing, starts it and prints a clickable localhost link",
   "bin": {
     "runit": "index.js",

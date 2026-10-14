@@ -278,3 +278,126 @@ test("a program that detaches itself is still stopped on Ctrl+C", async (t) => {
     await h.stop();
   }
 });
+
+test("monorepo: unbuilt workspace frontend UI is built before backend starts", async () => {
+  const dir = project({
+    "package.json": JSON.stringify({
+      name: "monorepo-app",
+      workspaces: ["packages/*"],
+      scripts: { start: "node server.js" },
+    }),
+    "server.js": `
+      const fs = require("fs");
+      const path = require("path");
+      const http = require("http");
+      const uiBuilt = fs.existsSync(path.join(__dirname, "packages", "web", "dist", "index.html"));
+      const s = http.createServer((req, res) => {
+        if (uiBuilt) res.end("UI-READY");
+        else res.end(JSON.stringify({ note: "UI not built" }));
+      });
+      s.listen(0, () => console.log("Local: http://localhost:" + s.address().port + "/"));
+    `,
+    "packages/web/package.json": JSON.stringify({
+      name: "@monorepo/web",
+      scripts: { build: "node build.js" },
+    }),
+    "packages/web/build.js": `
+      const fs = require("fs");
+      const path = require("path");
+      fs.mkdirSync(path.join(__dirname, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(__dirname, "dist", "index.html"), "<h1>UI</h1>");
+    `,
+  });
+
+  const dry = once([dir, "--dry"]);
+  assert.strictEqual(dry.code, 0);
+  assert.match(dry.out, /build step/i);
+
+  const h = start(dir);
+  try {
+    const m = await h.waitFor(/is ready -> (http:\/\/\S+)/);
+    const res = await get(m[1]);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body, "UI-READY");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("monorepo: frontend and backend workspaces both run concurrently", async () => {
+  const dir = project({
+    "package.json": JSON.stringify({
+      name: "monorepo-fullstack",
+      workspaces: ["packages/*"],
+    }),
+    "packages/server/package.json": JSON.stringify({
+      name: "@monorepo/server",
+      scripts: { start: "node server.js" },
+    }),
+    "packages/server/server.js": SERVER,
+    "packages/web/package.json": JSON.stringify({
+      name: "@monorepo/web",
+      scripts: { start: "node server.js" },
+    }),
+    "packages/web/server.js": SERVER,
+  });
+
+  const h = start(dir);
+  try {
+    await h.waitFor(/packages\/web .*is ready/);
+    await h.waitFor(/packages\/server .*is ready/);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("--verbose flag enables structured debug output", () => {
+  const dir = project({ "package.json": JSON.stringify({ scripts: { start: "node server.js" } }), "server.js": SERVER });
+  const r = once([dir, "--dry", "--verbose"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /\[runit:debug:scan\]/);
+});
+
+test("AI frameworks: Gradio app detected with default port 7860", () => {
+  const dir = project({ "app.py": `import gradio as gr\ndemo = gr.Interface(fn=lambda x: x, inputs="text", outputs="text")\ndemo.launch()` });
+  const r = once([dir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /Gradio/);
+});
+
+test("Go layout edge cases: single-file Go without go.mod and non-cmd server layouts", () => {
+  const dirSingle = project({ "main.go": `package main\nimport "fmt"\nfunc main() { fmt.Println("hello") }` }, "go-single");
+  const rSingle = once([dirSingle, "--dry"]);
+  assert.strictEqual(rSingle.code, 0);
+  assert.match(rSingle.out, /go run main\.go/);
+
+  const dirServer = project({
+    "go.mod": "module example.com/myserver\n\ngo 1.21\n",
+    "server/main.go": `package main\nfunc main() {}`,
+  }, "go-server");
+  const rServer = once([dirServer, "--dry"]);
+  assert.strictEqual(rServer.code, 0);
+  assert.match(rServer.out, /go run \.\/server/);
+});
+
+test("Rust layout edge cases: src/bin/server.rs binary without src/main.rs", () => {
+  const dir = project({
+    "Cargo.toml": `[package]\nname = "myrustapp"\nversion = "0.1.0"\nedition = "2021"\n`,
+    "src/bin/server.rs": `fn main() { println!("rust server"); }`,
+  });
+  const r = once([dir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /cargo run --bin server/);
+});
+
+test("Environment templates: .env.dist and .env.local.example are recognized", () => {
+  const dir = project({
+    "package.json": JSON.stringify({ scripts: { start: "node server.js" } }),
+    "server.js": SERVER,
+    ".env.dist": "API_SECRET=dist123\n",
+  });
+  const r = once([dir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /Found:/);
+});
+

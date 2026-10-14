@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.1
+- **AI / ML Frameworks**: added native detection and default port (7860) for Gradio (`gr.Interface`, `gr.Blocks`, `gr.ChatInterface`), and support for Litestar ASGI applications.
+- **Modern Python Lockfiles**: added lockfile change tracking (`poetry.lock`, `uv.lock`, `pdm.lock`) into installation stamp checks so environment updates are triggered automatically.
+- **Actionable Runtime Diagnostics**:
+  - Detects privileged port (< 1024) `EACCES` permission errors with root/admin and alternate port suggestions.
+  - Detects legacy OpenSSL 3.0 crypto incompatibilities (`ERR_OSSL_EVP_UNSUPPORTED`) and suggests `NODE_OPTIONS=--openssl-legacy-provider`.
+  - Detects offline Docker daemon errors (`Cannot connect to the Docker daemon`).
+  - Detects missing Ubuntu/Debian Python `venv` package (`ensurepip is not available`) and recommends `sudo apt install python3-venv`.
+  - Actionable hints for local database connection failures (`ECONNREFUSED` on PostgreSQL, MySQL, MongoDB, and Redis).
+- **Go Project Layout Edge Cases**:
+  - Supports single-file Go applications without `go.mod` (runs `go run main.go`).
+  - Detects alternative Go server layouts (`cmd/main.go`, `server/main.go`, `api/main.go`, `backend/main.go`, `app/main.go`, `src/main.go`).
+- **Rust Layout Edge Cases**: supports multiple binaries or `src/bin/*.rs` when root `src/main.rs` is absent (`cargo run --bin <name>`).
+- **Environment Templates**: expanded automatic template copying to support `.env.dist`, `.env.local.example`, and `.env.development`.
+- **CLI Diagnostics**: added `--verbose` CLI flag and structured debug output (`[runit:debug:<topic>]`).
+- **PyPI Names**: expanded module-to-package mappings for `fitz` (`pymupdf`), `faiss` (`faiss-cpu`), `pptx` (`python-pptx`), `torchvision`, `torchaudio`, `websocket`, `telegram` (`python-telegram-bot`), `pydantic_settings`, and `OpenGL` (`PyOpenGL`).
+- **Monorepos**: full support for npm, pnpm, yarn, and Bun workspace member discovery (`workspaces`, `pnpm-workspace.yaml`, and `lerna.json`), with pre-run UI build support and cached builds.
+
 ## 0.7.0
 - Refactor: organized all module-level constants into a unified section to eliminate temporal-dead-zone risks.
 - Refactor: extracted modular helpers for package manager resolution, Node/Python version checking, registry scanning, Python venv creation and installation, line parsing, stream handling, and port polling.
