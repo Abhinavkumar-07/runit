@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.8.2
+- **Standalone Node.js Server Detection**: added support for standalone `server.js`, `app.js`, `main.js`, or files with `.listen()`/`createServer()` running directly via `node <file>` even in folders without a `package.json`.
+
 ## 0.8.1
 - **.NET Support**: added native detection and execution for C# and F# projects (`*.csproj`, `*.fsproj`, `*.sln`) running `dotnet run` on port 5000 with automatic `dotnet restore`.
 - **Deno Support**: added native detection for `deno.json`, `deno.jsonc`, and Deno entry scripts, executing `deno task <dev|start|serve>` or `deno run -A <entry>` on default port 8000.

@@ -553,5 +553,22 @@ test("Static site detection with public/index.html", () => {
   assert.match(r.out, /Static site/);
 });
 
+test("Node.js server.js detection with and without package.json", () => {
+  // 1. With package.json (no scripts defined)
+  const withPkg = project({
+    "package.json": JSON.stringify({ name: "my-app" }),
+    "server.js": SERVER,
+  });
+  const r1 = once([withPkg, "--dry"]);
+  assert.strictEqual(r1.code, 0);
+  assert.match(r1.out, /node server\.js/);
 
-
+  // 2. Standalone server.js without package.json
+  const standalone = project({
+    "server.js": SERVER,
+  });
+  const r2 = once([standalone, "--dry"]);
+  assert.strictEqual(r2.code, 0);
+  assert.match(r2.out, /Node\.js/);
+  assert.match(r2.out, /node server\.js/);
+});

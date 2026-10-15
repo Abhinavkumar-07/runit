@@ -307,7 +307,20 @@ function scanRegistries(d) {
 }
 
 function detectNode(d) {
-  if (!exists(d, "package.json")) return null;
+  const isSelf = (f) => path.resolve(d, f).toLowerCase() === __filename.toLowerCase(); // never run runit itself
+  const looksLikeServer = (f) => /\.listen\s*\(|createServer\s*\(/.test(readText(d, f));
+  const mainCandidates = ["server.js", "index.js", "app.js", "main.js", "src/server.js", "src/index.js", "src/app.js", "src/main.js"];
+
+  if (!exists(d, "package.json")) {
+    const standalone = mainCandidates.find((f) => exists(d, f) && !isSelf(f) && (f.endsWith("server.js") || looksLikeServer(f)));
+    if (!standalone) return null;
+    return {
+      cwd: d, label: "Node.js", kind: "backend", port: null, pm: "node", scriptText: `node ${standalone}`, hooks: [], risky: null,
+      needs: ["node"], steps: [], run: sh("node", [standalone]), known: false, warns: [], libraryLike: false,
+      hasModules: () => false, depsPresent: () => true, installed: () => true,
+    };
+  }
+
   try {
     if (!fs.statSync(path.join(d, "package.json")).isFile()) {
       notes.add(`${path.relative(root, path.join(d, "package.json")) || "package.json"} is not a regular file, so it was skipped`);
@@ -325,10 +338,7 @@ function detectNode(d) {
   const scripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
   const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
   const script = ["dev", "develop", "start", "serve", "start:dev", "dev:server", "server", "start:local"].find((s) => scripts[s]);
-  const isSelf = (f) => path.resolve(d, f).toLowerCase() === __filename.toLowerCase(); // never run runit itself
-  const looksLikeServer = (f) => /\.listen\s*\(|createServer\s*\(/.test(readText(d, f));
   const isLibrary = !!(pkg.main || pkg.module || pkg.exports || pkg.types || pkg.typings || pkg.bin || pkg.files);
-  const mainCandidates = ["server.js", "index.js", "app.js", "main.js", "src/server.js", "src/index.js", "src/app.js", "src/main.js"];
   const mainFile = [pkg.main, ...mainCandidates].find(
     (f) => typeof f === "string" && exists(d, f) && !isSelf(f) &&
       (looksLikeServer(f) || (!isLibrary && mainCandidates.includes(f)))
