@@ -308,11 +308,23 @@ function scanRegistries(d) {
 
 function detectNode(d) {
   const isSelf = (f) => path.resolve(d, f).toLowerCase() === __filename.toLowerCase(); // never run runit itself
-  const looksLikeServer = (f) => /\.listen\s*\(|createServer\s*\(/.test(readText(d, f));
-  const mainCandidates = ["server.js", "index.js", "app.js", "main.js", "src/server.js", "src/index.js", "src/app.js", "src/main.js"];
+  const looksLikeServer = (f) => /\.listen\s*\(|createServer\s*\(|from\s+['"]http['"]|require\s*\(\s*['"]http['"]\)/.test(readText(d, f));
+  const BASE_NAMES = ["server", "index", "app", "main", "api", "web", "start", "run", "backend", "service"];
+  const EXTENSIONS = [".js", ".mjs", ".cjs"];
+  const mainCandidates = [
+    ...BASE_NAMES.flatMap((n) => EXTENSIONS.map((e) => n + e)),
+    ...BASE_NAMES.flatMap((n) => EXTENSIONS.map((e) => `src/${n}${e}`)),
+  ];
+
+  // If someone names their server file something completely custom (e.g. custom-server.js, myapp.mjs):
+  const findArbitraryServer = () => {
+    const rootFiles = safeReaddir(d).filter((f) => /\.(js|mjs|cjs)$/i.test(f) && !isSelf(f));
+    const srcFiles = exists(d, "src") ? safeReaddir(path.join(d, "src")).filter((f) => /\.(js|mjs|cjs)$/i.test(f)).map((f) => `src/${f}`) : [];
+    return [...rootFiles, ...srcFiles].find(looksLikeServer) || null;
+  };
 
   if (!exists(d, "package.json")) {
-    const standalone = mainCandidates.find((f) => exists(d, f) && !isSelf(f) && (f.endsWith("server.js") || looksLikeServer(f)));
+    const standalone = mainCandidates.find((f) => exists(d, f) && !isSelf(f) && (/(^|[/\\])(server|app|api|web|backend|service)\.[mc]?js$/i.test(f) || looksLikeServer(f))) || findArbitraryServer();
     if (!standalone) return null;
     return {
       cwd: d, label: "Node.js", kind: "backend", port: null, pm: "node", scriptText: `node ${standalone}`, hooks: [], risky: null,
@@ -342,7 +354,7 @@ function detectNode(d) {
   const mainFile = [pkg.main, ...mainCandidates].find(
     (f) => typeof f === "string" && exists(d, f) && !isSelf(f) &&
       (looksLikeServer(f) || (!isLibrary && mainCandidates.includes(f)))
-  );
+  ) || findArbitraryServer();
   if (!script && !mainFile) return null;
 
   // package manager: "packageManager" field > nearest lockfile (also in workspace root) > npm
@@ -584,10 +596,17 @@ function detectPython(d) {
   const files = [
     "app.py", "main.py", "server.py", "run.py", "api.py", "application.py",
     "app/main.py", "src/main.py", "app/app.py", "src/app.py", "src/server.py",
-    "wsgi.py", "asgi.py", "web.py", "index.py"
+    "wsgi.py", "asgi.py", "web.py", "index.py", "backend.py", "service.py", "start.py"
   ];
   const hasManage = exists(d, "manage.py");
-  const entry = files.find((f) => exists(d, f));
+  let entry = files.find((f) => exists(d, f));
+  if (!hasManage && !entry) {
+    const pyCandidates = safeReaddir(d).filter((f) => f.endsWith(".py") && !f.startsWith("test") && !f.startsWith("."));
+    entry = pyCandidates.find((f) => {
+      const txt = stripPyComments(readText(d, f));
+      return /\b(FastAPI|Flask|Litestar|Sanic|web\.Application)\s*\(|import\s+(streamlit|gradio)\b|if\s+__name__\s*==\s*['"]__main__['"]/.test(txt);
+    }) || null;
+  }
   if (!hasManage && !entry) return null; // a random .py file is not a project
 
   // dependency files: this folder, or a parent inside the scanned root (manage.py in src/, requirements at the repo root)
@@ -738,6 +757,10 @@ function detectGo(d) {
         break;
       }
     }
+  }
+  if (!target) {
+    const anyMain = safeReaddir(d).find((f) => f.endsWith(".go") && /func\s+main\s*\(/.test(readText(d, f)));
+    if (anyMain) target = hasMod ? "." : anyMain;
   }
   if (!target) return null;
   return {

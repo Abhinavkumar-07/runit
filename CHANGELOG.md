@@ -1,7 +1,11 @@
 # Changelog
 
 ## 0.8.2
-- **Standalone Node.js Server Detection**: added support for standalone `server.js`, `app.js`, `main.js`, or files with `.listen()`/`createServer()` running directly via `node <file>` even in folders without a `package.json`.
+- **Arbitrary Server Entry Point Detection**:
+  - **Node.js**: scans all `.js`, `.mjs`, and `.cjs` files (including in `src/`) for `.listen()` or `createServer()` calls so any arbitrary file name (e.g. `custom-backend.mjs`, `api.js`, `service.cjs`) runs automatically even without a `package.json` or start script.
+  - **Python**: scans root `.py` files for framework declarations (`FastAPI`, `Flask`, `Litestar`, `Sanic`, `tornado`, `aiohttp`, `Streamlit`, `Gradio`) or `if __name__ == '__main__':`, enabling custom server names like `my_api.py` or `backend.py`.
+  - **Go**: scans for any `.go` file in the root folder containing `func main()` (e.g. `service.go`) even when not named `main.go`.
+- **Standalone Node.js Server Detection**: added support for standalone server scripts running directly via `node <file>` in folders without a `package.json`.
 
 ## 0.8.1
 - **.NET Support**: added native detection and execution for C# and F# projects (`*.csproj`, `*.fsproj`, `*.sln`) running `dotnet run` on port 5000 with automatic `dotnet restore`.

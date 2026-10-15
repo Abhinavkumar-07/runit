@@ -572,3 +572,32 @@ test("Node.js server.js detection with and without package.json", () => {
   assert.match(r2.out, /Node\.js/);
   assert.match(r2.out, /node server\.js/);
 });
+
+test("Arbitrary server file names: custom-backend.mjs, my_api.py, service.go", () => {
+  // Arbitrary Node.js name (.mjs / .js / .cjs)
+  const nodeCustom = project({
+    "custom-backend.mjs": `import http from 'http'; const s = http.createServer(); s.listen(3000);`,
+  });
+  const rNode = once([nodeCustom, "--dry"]);
+  assert.strictEqual(rNode.code, 0);
+  assert.match(rNode.out, /custom-backend\.mjs/);
+
+  // Arbitrary Python name
+  const pyCustom = project({
+    "requirements.txt": "fastapi\n",
+    "my_custom_api.py": `from fastapi import FastAPI\napp = FastAPI()\n`,
+  });
+  const rPy = once([pyCustom, "--dry"]);
+  assert.strictEqual(rPy.code, 0);
+  assert.match(rPy.out, /FastAPI/);
+  assert.match(rPy.out, /my_custom_api:app/);
+
+  // Arbitrary Go name
+  const goCustom = project({
+    "service.go": `package main\nimport "fmt"\nfunc main() { fmt.Println("hello"); }\n`,
+  });
+  const rGo = once([goCustom, "--dry"]);
+  assert.strictEqual(rGo.code, 0);
+  assert.match(rGo.out, /go run service\.go/);
+});
+
