@@ -51,6 +51,13 @@ npm install -g runit-dev
 
 > **Requirement**: Node.js 18 or newer. No additional tools or external package dependencies required.
 
+> **Windows PowerShell Users**: If PowerShell reports `...runit-dev.ps1 cannot be loaded because running scripts is disabled on this system`, Windows PowerShell is blocking script execution under its default `Restricted` policy. You can:
+> 1. Run via the batch launcher: `runit.cmd` (or `runit-dev.cmd`), which runs immediately without script restrictions.
+> 2. Or allow local scripts for your user account:
+>    ```powershell
+>    Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+>    ```
+
 ---
 
 ## Usage

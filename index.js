@@ -66,6 +66,10 @@ exactly like doing it by hand. Only use it on projects you trust.`);
 const folders = argv.filter((a) => !a.startsWith("-"));
 // "runit stop" / "runit status" are commands, unless a folder with that name exists here
 const SUB = ["stop", "status"].includes(folders[0]) && !fs.existsSync(path.resolve(folders[0])) ? folders[0] : null;
+if (folders.some((f) => f === "")) {
+  console.error("runit: the folder path is empty (is a shell variable unset?). Give a folder, or leave it out to use the current one.");
+  process.exit(2);
+}
 if (folders.length > (SUB ? 2 : 1)) {
   console.error("runit: please give only one folder.");
   process.exit(2);
@@ -80,12 +84,16 @@ const EXTRA_ENV = new Set([...flags].filter((f) => f.startsWith("--env=")).flatM
 const VERBOSE = flags.has("--verbose") || process.env.RUNIT_VERBOSE === "1";
 const DOCKER = flags.has("--docker");
 const NO_DOCKER = flags.has("--no-docker");
+let dockerProbe = null; // cached by dockerStatus()
 const debug = (topic, ...msg) => {
   if (VERBOSE) console.log(`${paint(90, `[runit:debug:${topic}]`)} ${msg.join(" ")}`);
 };
 
 // ---------- helpers ----------
 const exists = (d, f) => fs.existsSync(path.join(d, f));
+const isFile = (d, f) => { // a real file, not a folder that happens to carry the same name
+  try { return fs.statSync(path.join(d, f)).isFile(); } catch { return false; }
+};
 const readText = (d, f) => {
   try {
     const full = path.join(d, f);
@@ -223,6 +231,10 @@ const PYPI_NAMES = {
 };
 
 const DENY_ENV = /^(AWS_|AZURE_|GOOGLE_APPLICATION|GCP_|GCLOUD_|GITLAB_|SLACK_|STRIPE_|DOCKER_|GITHUB_TOKEN$|GH_TOKEN$|SSH_AUTH_SOCK$|KUBECONFIG$)|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|CREDENTIAL/i;
+// Docker's own connection settings (DOCKER_HOST, DOCKER_CONTEXT, DOCKER_CONFIG, DOCKER_TLS_VERIFY, ...) must reach the docker CLI,
+// otherwise it talks to the wrong daemon (Colima, rootless Docker, Rancher Desktop and remote daemons all depend on them).
+const DOCKER_ENV = /^(DOCKER_|COMPOSE_|BUILDKIT_)/i;
+const isDockerCmd = (c) => /^docker(-compose)?(\.exe|\.cmd)?$/i.test(path.basename(String(c || "")));
 const KEEP_ENV = /^(NPM_TOKEN|NODE_AUTH_TOKEN|NPM_CONFIG_|PIP_|HTTPS?_PROXY|NO_PROXY)/i;
 const ALLOW_ENV = /^(PATH|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|PROGRAMFILES.*|PROGRAMDATA|SYSTEMROOT|SYSTEMDRIVE|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR|USER|USERNAME|LOGNAME|SHELL|TERM|COLORTERM|LANG|LC_.*|TZ|NODE_.*|NPM_CONFIG_.*|PYTHON.*|PIP_.*|VIRTUAL_ENV|CI|FORCE_COLOR|NO_COLOR|PORT|HOST|DISPLAY|XDG_.*|LD_LIBRARY_PATH|JAVA_HOME|GOPATH|GOROOT|CARGO_HOME|RUSTUP_HOME|GEM_HOME|BUNDLE_.*|COMPOSER_.*|(https?|all|no)_proxy)$/i;
 
@@ -308,7 +320,9 @@ function scanRegistries(d) {
 
 function detectNode(d) {
   const isSelf = (f) => path.resolve(d, f).toLowerCase() === __filename.toLowerCase(); // never run runit itself
-  const looksLikeServer = (f) => /\.listen\s*\(|createServer\s*\(|from\s+['"]http['"]|require\s*\(\s*['"]http['"]\)/.test(readText(d, f));
+  // a server is code that calls listen()/createServer(): not a comment, a string, or a file that merely imports http
+  const stripJs = (t) => t.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|(['"`])(?:\\[\s\S]|(?!\1)[^\\\n])*\1/g, "");
+  const looksLikeServer = (f) => /\.listen\s*\(|createServer\s*\(/.test(stripJs(readText(d, f)));
   const BASE_NAMES = ["server", "index", "app", "main", "api", "web", "start", "run", "backend", "service"];
   const EXTENSIONS = [".js", ".mjs", ".cjs"];
   const mainCandidates = [
@@ -344,17 +358,25 @@ function detectNode(d) {
     pkg = JSON.parse(readText(d, "package.json"));
   } catch {}
   if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) {
-    notes.add(`${path.relative(root, path.join(d, "package.json")) || "package.json"} is not valid JSON, so it was skipped`);
-    return null;
+    let big = false;
+    try { big = fs.statSync(path.join(d, "package.json")).size > 5 * 1024 * 1024; } catch {}
+    notes.add(`${path.relative(root, path.join(d, "package.json")) || "package.json"} ${big ? "is larger than 5 MB" : "is not valid JSON"}, so it was skipped`);
+    const standalone = mainCandidates.find((f) => exists(d, f) && !isSelf(f) && (/(^|[\/\\])(server|app|api|web|backend|service)\.[mc]?js$/i.test(f) || looksLikeServer(f))) || findArbitraryServer();
+    if (!standalone) return null;
+    return {
+      cwd: d, label: "Node.js", kind: "backend", port: null, pm: "node", scriptText: `node ${standalone}`, hooks: [], risky: null,
+      needs: ["node"], steps: [], run: sh("node", [standalone]), known: false, warns: [], libraryLike: false,
+      hasModules: () => false, depsPresent: () => true, installed: () => true,
+    };
   }
   const scripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
   const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-  const script = ["dev", "develop", "start", "serve", "start:dev", "dev:server", "server", "start:local"].find((s) => scripts[s]);
+  const script = ["dev", "develop", "start", "serve", "start:dev", "dev:server", "server", "start:local", "docs:dev", "docs:start", "docs:serve"].find((s) => scripts[s]);
   const isLibrary = !!(pkg.main || pkg.module || pkg.exports || pkg.types || pkg.typings || pkg.bin || pkg.files);
   const mainFile = [pkg.main, ...mainCandidates].find(
     (f) => typeof f === "string" && exists(d, f) && !isSelf(f) &&
       (looksLikeServer(f) || (!isLibrary && mainCandidates.includes(f)))
-  ) || findArbitraryServer();
+  ) || (isLibrary ? null : findArbitraryServer());
   if (!script && !mainFile) return null;
 
   // package manager: "packageManager" field > nearest lockfile (also in workspace root) > npm
@@ -601,11 +623,13 @@ function detectPython(d) {
   const hasManage = exists(d, "manage.py");
   let entry = files.find((f) => exists(d, f));
   if (!hasManage && !entry) {
-    const pyCandidates = safeReaddir(d).filter((f) => f.endsWith(".py") && !f.startsWith("test") && !f.startsWith("."));
-    entry = pyCandidates.find((f) => {
-      const txt = stripPyComments(readText(d, f));
-      return /\b(FastAPI|Flask|Litestar|Sanic|web\.Application)\s*\(|import\s+(streamlit|gradio)\b|if\s+__name__\s*==\s*['"]__main__['"]/.test(txt);
-    }) || null;
+    // never an app: packaging, test and task-runner files. Then: a file that really builds a web app beats one that only has a __main__ guard.
+    const NOT_ENTRY = /^(setup|conftest|noxfile|fabfile|tasks|__init__|__main__)\.py$|_test\.py$/i;
+    const pyCandidates = safeReaddir(d).filter((f) => f.endsWith(".py") && !f.startsWith("test") && !f.startsWith(".") && !NOT_ENTRY.test(f)).sort();
+    const webApp = /\b(FastAPI|Flask|Litestar|Sanic|web\.Application)\s*\(|import\s+(streamlit|gradio)\b/;
+    const mainGuard = /if\s+__name__\s*==\s*['"]__main__['"]/;
+    entry = pyCandidates.find((f) => webApp.test(stripPyComments(readText(d, f))))
+      || pyCandidates.find((f) => mainGuard.test(stripPyComments(readText(d, f)))) || null;
   }
   if (!hasManage && !entry) return null; // a random .py file is not a project
 
@@ -786,7 +810,7 @@ function detectDotnet(d) {
 function detectJava(d) {
   if (exists(d, "pom.xml")) {
     const pom = readText(d, "pom.xml");
-    const spring = pom.includes("spring-boot");
+    const spring = /spring-boot|org\.springframework\.boot/i.test(pom);
     const quarkus = /quarkus/i.test(pom);
     const micronaut = /micronaut/i.test(pom);
     if (!spring && !quarkus && !micronaut) return null;
@@ -806,7 +830,7 @@ function detectJava(d) {
   const gradleFile = ["build.gradle", "build.gradle.kts"].find((f) => exists(d, f));
   if (gradleFile) {
     const content = readText(d, gradleFile);
-    const spring = content.includes("spring-boot");
+    const spring = /spring-boot|org\.springframework\.boot/i.test(content);
     const quarkus = /quarkus/i.test(content);
     const micronaut = /micronaut/i.test(content);
     const w = isWin ? "gradlew.bat" : "./gradlew";
@@ -870,6 +894,8 @@ function detectRust(d) {
       args = ["run", "--bin", bins[0].replace(/\.rs$/, "")];
     }
   }
+  // a library crate (no src/main.rs, no src/bin, no [[bin]]) has nothing that `cargo run` could start
+  if (args.length === 1 && !exists(d, "src/main.rs") && !/^\s*\[\[bin\]\]/m.test(toml)) return null;
   return { cwd: d, label: "Rust", kind: "backend", port: null, needs: ["cargo"], steps: [], run: sh("cargo", args) };
 }
 
@@ -942,8 +968,8 @@ function detectElixir(d) {
 
 function detectStatic(d) {
   if (exists(d, "package.json")) return null;
-  const hasRoot = exists(d, "index.html");
-  const hasPublic = exists(d, "public/index.html");
+  const hasRoot = isFile(d, "index.html");
+  const hasPublic = isFile(d, "public/index.html");
   if (!hasRoot && !hasPublic) return null;
   const staticDir = !hasRoot && hasPublic ? path.join(d, "public") : d;
   return { cwd: d, staticDir, label: "Static site", kind: "frontend", port: 3000, needs: [], steps: [], static: true };
@@ -957,8 +983,26 @@ function findComposePort(text) {
   return webPorts.find((wp) => hostPorts.includes(wp)) || hostPorts[0] || null;
 }
 
+const COMPOSE_FILES = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
+
+// What Docker can really do on this computer (cached): CLI installed, daemon running, compose v2 or old docker-compose.
+function dockerStatus() {
+  if (dockerProbe) return dockerProbe;
+  const ok = (c, a) => {
+    try {
+      return spawnX(spawnSync, sh(c, a), { stdio: "ignore", timeout: 20000 }).status === 0;
+    } catch {
+      return false;
+    }
+  };
+  const cli = hasCmd("docker") && ok("docker", ["--version"]);
+  const daemon = cli && ok("docker", ["info"]);
+  const compose = !cli ? null : ok("docker", ["compose", "version"]) ? ["docker", "compose"] : ok("docker-compose", ["version"]) ? ["docker-compose"] : null;
+  return (dockerProbe = { cli, daemon, compose });
+}
+
 function detectCompose(d) {
-  const f = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"].find((x) => exists(d, x));
+  const f = COMPOSE_FILES.find((x) => isFile(d, x));
   if (!f) return null;
   const content = readText(d, f);
   const port = findComposePort(content);
@@ -966,47 +1010,94 @@ function detectCompose(d) {
     cwd: d, label: "Docker Compose", kind: "backend", port, needs: ["docker"], steps: [],
     run: sh("docker", ["compose", "up", "--build"]),
     compose: true,
+    // does the file build an application (build:), or only start ready-made services such as a database (image:)?
+    buildsApp: /^\s*(build|dockerfile|context)\s*:/m.test(content),
+    hasServices: /^\s*(image|build)\s*:/m.test(content),
   };
 }
 
 function detectDockerfile(d) {
-  const f = ["Dockerfile", "Dockerfile.dev", "docker/Dockerfile"].find((x) => exists(d, x));
+  const f = ["Dockerfile", "Dockerfile.dev", "docker/Dockerfile"].find((x) => isFile(d, x));
   if (!f) return null;
   const content = readText(d, f);
-  const exp = content.match(/^EXPOSE\s+(\d+)/im);
-  const port = exp ? Number(exp[1]) : 8080;
-  const rawName = path.basename(path.resolve(d)).toLowerCase().replace(/[^a-z0-9_.-]/g, "") || "app";
-  const tag = `runit-${rawName}`;
+  // every EXPOSEd TCP port is published on the same host port (a range or a $VARIABLE cannot be resolved here)
+  const ports = [];
+  for (const m of content.matchAll(/^\s*EXPOSE\s+(.+)$/gim))
+    for (const tok of m[1].split(/\s+/)) {
+      const t = tok.match(/^(\d{1,5})(?:\/(tcp|udp))?$/i);
+      const n = t ? Number(t[1]) : 0;
+      if (t && (t[2] || "tcp").toLowerCase() === "tcp" && n > 0 && n < 65536 && !ports.includes(n)) ports.push(n);
+    }
+  const guessed = !ports.length;
+  if (guessed) ports.push(8080);
+  const port = ports[0];
+  // Docker image names: lowercase letters/digits joined by single separators, never ending in one. A short hash of the
+  // folder path keeps two different folders with the same (or all non-latin) name apart.
+  const rawName = path.basename(path.resolve(d)).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 40).replace(/-+$/, "") || "app";
+  const tag = `runit-${rawName}-${crypto.createHash("sha1").update(path.resolve(d)).digest("hex").slice(0, 6)}`;
   const containerName = `runit-${rawName}-${RUN_ID}`;
   return {
     cwd: d, label: "Dockerfile", kind: "backend", port, needs: ["docker"],
+    warns: guessed ? ["the Dockerfile has no usable EXPOSE line, so runit assumes port 8080. Add EXPOSE <port> for a reliable link."] : [],
     steps: [
-      { cmd: "docker", args: ["build", "-t", tag, "-f", f, "."], cwd: d, shell: isWin, action: "build", label: "building Docker image" },
+      // fatal: if the image cannot be built, running the OLD image would silently start stale code
+      { cmd: "docker", args: ["build", "-t", tag, "-f", f, "."], cwd: d, shell: isWin, action: "build", fatal: true, label: "building Docker image" },
     ],
-    run: sh("docker", ["run", "--rm", "--name", containerName, "-p", `${port}:${port}`, tag]),
+    // --init: Ctrl+C must stop apps that do not handle signals as PID 1
+    run: sh("docker", ["run", "--rm", "--init", "--name", containerName, ...ports.flatMap((p) => ["-p", `${p}:${p}`]), tag]),
     dockerfile: true,
     containerName,
   };
 }
 
+// Docker files win: if the project ships a compose file or a Dockerfile, that is how its author runs it.
+// If Docker cannot be used here, fall back to the host setup and say so loudly.
 function detect(d) {
   debug("scan", "checking folder:", d);
   const compose = !NO_DOCKER ? detectCompose(d) : null;
   const dockerfile = !NO_DOCKER ? detectDockerfile(d) : null;
 
   if (DOCKER) {
+    // "no Docker configuration" is reported once, for the whole project, by discover()
     if (compose) return [compose];
     if (dockerfile) return [dockerfile];
-    throw new Err(`No Docker configuration found in ${d} (looked for docker-compose.yml or Dockerfile).`);
+    return [];
   }
 
-  // When Docker Compose exists and Docker is available, prioritize the containerized environment
-  // over downloading and compiling host dependencies (avoiding dependency conflicts and missing services)
-  if (compose && !NO_DOCKER && hasCmd("docker")) {
-    debug("scan", "Docker Compose found in", d, "; prioritizing containerized environment over host dependencies");
-    return [compose];
-  }
+  const dk = compose || dockerfile;
+  if (!dk) return detectNative(d);
 
+  const st = dockerStatus();
+  const rel = path.relative(root, d) || ".";
+  const why = !st.cli ? "Docker is not installed" : !st.daemon ? "Docker is not running" : dk.compose && !st.compose ? "this Docker has no compose support" : "";
+  const native = detectNative(d);
+  if (dk.compose && !dk.hasServices && native.length) return native; // an empty compose file starts nothing: ignore it
+  if (!why) {
+    if (dk.compose && st.compose[0] === "docker-compose") dk.run = sh("docker-compose", ["up", "--build"]);
+    if (dk.compose) dk.composeBin = st.compose;
+    if (dk.compose && !dk.buildsApp && native.length) {
+      // the compose file only starts ready-made services (database, cache, ...): start them in the background,
+      // then run the application itself the normal way
+      debug("scan", "compose without build: only provides services; starting it in the background, app runs on the host");
+      notes.add(`found ${dk.label} in ${rel} with no application to build (only ready-made services): starting those in the background and running the app on this computer`);
+      native[0].steps = [
+        { cmd: st.compose[0], args: [...st.compose.slice(1), "up", "-d"], cwd: d, shell: isWin, action: "infra", label: "starting services from compose (database, cache, ...)" },
+        ...(native[0].steps || []),
+      ];
+      native[0].dockerInfra = { cwd: d, bin: st.compose };
+      return native;
+    }
+    if (native.length) notes.add(`found ${dk.label} in ${rel}: following it instead of the ${native.map((p) => p.label).join(" + ")} setup (use --no-docker to run natively)`);
+    return [dk];
+  }
+  if (native.length) {
+    notes.add(`found ${dk.label} in ${rel}, but ${why}, so runit is starting the project WITHOUT Docker. This may behave differently from the Docker setup. Start Docker and run again to use it`);
+    return native;
+  }
+  return [dk]; // nothing else to try: running it explains what Docker needs
+}
+
+function detectNative(d) {
   const node = detectNode(d);
   const py = detectPython(d);
   const out = [];
@@ -1033,11 +1124,6 @@ function detect(d) {
     debug("scan", "found service in", d, ":", other.label);
     return [other];
   }
-
-  // If no host stack matched, but Docker Compose or Dockerfile exists:
-  if (compose) return [compose];
-  if (dockerfile && !NO_DOCKER) return [dockerfile];
-
   return [];
 }
 
@@ -1139,6 +1225,13 @@ function resolveWorkspaceDirs(rootDir, globs) {
 }
 
 function discover(rootDir) {
+  const plans = discoverPlans(rootDir);
+  if (DOCKER && !plans.some((p) => p.compose || p.dockerfile))
+    throw new Err(`No Docker configuration found in ${rootDir} (looked for docker-compose.yml or Dockerfile).`);
+  return plans;
+}
+
+function discoverPlans(rootDir) {
   const own = detect(rootDir);
   const wsGlobs = getWorkspaceGlobs(rootDir);
   if (wsGlobs.length) {
@@ -1211,7 +1304,10 @@ function discover(rootDir) {
     }
   }
 
-  if (own.length) return own;
+  if (own.length && !own.every((p) => p.static)) return own;
+  // nothing at the root, or only a static page: look inside subfolders
+  // (a static root page often sits next to the real app, e.g. index.html + server/)
+  const staticOnly = own.length > 0;
   const scan = (skip, skipLibs) => {
     const found = [];
     let visited = 0;
@@ -1236,9 +1332,14 @@ function discover(rootDir) {
     walk(rootDir, 1);
     return found;
   };
-  let found = scan(SKIP, true);
-  if (!found.length) found = scan(HARD_SKIP, true);
-  if (!found.length) found = scan(HARD_SKIP, false);
+  const keep = staticOnly ? (list) => list.filter((p) => !p.static) : (list) => list;
+  let found = keep(scan(SKIP, true));
+  if (!found.length) found = keep(scan(HARD_SKIP, true));
+  if (!found.length) found = keep(scan(HARD_SKIP, false));
+  if (staticOnly) {
+    if (found.length) notes.add(`found a static page at the root and ${found.length === 1 ? "an app" : found.length + " apps"} in subfolders (${found.map((p) => path.relative(rootDir, p.cwd)).join(", ")}): starting all of them`);
+    return [...own, ...found];
+  }
   return found;
 }
 
@@ -1263,6 +1364,7 @@ function guardMain() {
   };
   log("guardian started, watching runit pid " + ppid);
   const pids = new Set();
+  const cleanups = []; // e.g. "docker stop <container>": a container is not part of runit's process tree
   let done = false;
   const killAll = (why) => {
     if (done) return;
@@ -1304,6 +1406,14 @@ function guardMain() {
         log("error stopping " + p + ": " + e.message);
       }
     }
+    for (const c of cleanups) {
+      try {
+        const r = cp.spawnSync(c.cmd[0], c.cmd.slice(1), { cwd: c.cwd || undefined, stdio: "ignore", timeout: 25000, shell: win });
+        log("cleanup " + c.cmd.join(" ") + " status=" + r.status);
+      } catch (e) {
+        log("cleanup failed: " + e.message);
+      }
+    }
     process.exit(0);
   };
   let buf = "";
@@ -1315,6 +1425,10 @@ function guardMain() {
       if (l === "done") {
         log("runit finished normally");
         process.exit(0);
+      }
+      if (l.startsWith("cleanup ")) {
+        try { const c = JSON.parse(l.slice(8)); if (c && Array.isArray(c.cmd) && c.cmd.length) cleanups.push(c); } catch {}
+        continue;
       }
       const n = Number(l);
       if (n > 0) { pids.add(n); log("watching pid " + n); }
@@ -1490,7 +1604,9 @@ async function shutdown(code = 0) {
   list.forEach((c) => killGroup(c, "SIGTERM"));
   for (const dp of activeDockerServices) {
     if (dp.compose) {
-      try { spawnSync("docker", ["compose", "down"], { cwd: dp.cwd, stdio: "ignore" }); } catch {}
+      const bin = dp.composeBin || ["docker", "compose"];
+      // services started only as infrastructure are stopped, not removed (the database keeps its data)
+      try { spawnSync(bin[0], [...bin.slice(1), dp.infra ? "stop" : "down"], { cwd: dp.cwd, stdio: "ignore" }); } catch {}
     } else if (dp.containerName) {
       try { spawnSync("docker", ["stop", dp.containerName], { stdio: "ignore" }); } catch {}
     }
@@ -1864,10 +1980,16 @@ function installHint(t) {
 }
 const doneSteps = new Set();
 // installs run other people's scripts: they never receive cloud/CI secrets from your shell
-function installEnv() {
+function installEnv(cmd) {
   const e = {};
-  for (const [k, v] of Object.entries(process.env)) if (KEEP_ENV.test(k) || !DENY_ENV.test(k)) e[k] = v;
+  // the docker CLI is not project code: it needs the user's Docker settings and registry credentials
+  for (const [k, v] of Object.entries(process.env)) if (KEEP_ENV.test(k) || !DENY_ENV.test(k) || (isDockerCmd(cmd) && DOCKER_ENV.test(k))) e[k] = v;
   e.RUNIT_RUN_ID = RUN_ID;
+  return e;
+}
+function dockerEnvFromShell() { // --clean-env must not cut the docker CLI off from its daemon
+  const e = {};
+  for (const [k, v] of Object.entries(process.env)) if (DOCKER_ENV.test(k)) e[k] = v;
   return e;
 }
 function runEnv() {
@@ -1881,7 +2003,7 @@ function runStep(plan, step) {
   say(`${plan.name}: ${lbl}${cleanText([step.cmd, ...step.args].join(" "))}`);
   return new Promise((resolve, reject) => {
     let tail = "";
-    const child = spawnX(spawn, step, { cwd: step.cwd || plan.cwd, env: installEnv(), stdio: ["ignore", "inherit", "pipe"], detached: !isWin });
+    const child = spawnX(spawn, step, { cwd: step.cwd || plan.cwd, env: installEnv(step.cmd), stdio: ["ignore", "inherit", "pipe"], detached: !isWin });
     track(child);
     child.stderr.on("data", (b) => {
       process.stderr.write(b);
@@ -2045,7 +2167,14 @@ async function prepare(plan) {
       }
     }
     if (!ok) {
-      if (s.action === "build") {
+      if (s.fatal) {
+        const tail = (lastErr && lastErr.tail) || "";
+        if (/Cannot connect to the Docker daemon|docker daemon is not running|Is the docker daemon running|error during connect.*docker/i.test(tail))
+          throw new Err("Docker is not running. Please start Docker Desktop (or run 'sudo systemctl start docker' on Linux) and try again. To ignore the project's Docker files, use --no-docker.");
+        throw new Err(`${plan.name}: ${s.label || "build"} failed, so nothing was started (an old build could be stale). ${tail.trim().split("\n").slice(-6).join("\n")}`.trim());
+      } else if (s.action === "infra") {
+        say(`${paint(33, "WARNING")} ${plan.name}: could not start the compose services (${lastErr ? lastErr.message : "error"}). Starting the app anyway; it may fail to reach its database.`);
+      } else if (s.action === "build") {
         say(`${paint(33, "WARNING")} ${plan.name}: build step failed (${lastErr ? lastErr.message : "error"}). Continuing anyway.`);
       } else {
         throw lastErr;
@@ -2063,6 +2192,7 @@ const PORT_RE = /(?:listening|running|started|serving|available|live)[^\n]*?(?:p
 const NOISE = /debugger|inspector|devtools|ws:\/\/|wss:\/\/|live ?reload|hot ?reload|\bhmr\b|websocket|source ?map/i;
 const IGNORE_PORTS = new Set([9229, 9222, 5858, 35729, 24678]); // debugger / live-reload ports
 const claimed = new Map(); // port -> plan that owns it
+const startedPlans = new Set(); // every service runit launched (so a port clash can name the sibling that holds the port)
 let alive_services = 0;
 let pendingRetries = 0;
 
@@ -2105,7 +2235,9 @@ function handleServiceLine(plan, line, tag, out, candidate, skip = 0) {
   if (/EADDRINUSE|address already in use|Errno 98|Errno 10048|port \d+ is already (in use|allocated)|port \d+ is in use(?!,? trying)/i.test(clean))
   {
     const pm2 = clean.match(/:(\d{2,5})\b/);
-    const other = pm2 && claimed.get(Number(pm2[1]));
+    let other = pm2 && claimed.get(Number(pm2[1]));
+    // two services starting at the same moment clash before either has been announced: look at what the others printed
+    if (!other && pm2) other = [...startedPlans].find((o) => o !== plan && new RegExp(`:${pm2[1]}\\b`).test(o.recent || ""));
     plan.hint = other && other !== plan
       ? `This service wants port ${pm2[1]}, which ${other.name} is already using. Give one of them another port (for example PORT=${Number(pm2[1]) + 1} in its .env file).`
       : "A port this app needs is already used by another program (maybe a previous run is still open). Close it and run runit again.";
@@ -2243,11 +2375,17 @@ async function launch(plan, multi) {
   }
 
   alive_services++;
+  startedPlans.add(plan);
   debug("launch", "starting", plan.name, `(${plan.label})`, "->", plan.run.cmd, plan.run.args.join(" "));
   if (plan.compose || plan.dockerfile) activeDockerServices.push(plan);
+  if (plan.dockerInfra) activeDockerServices.push({ compose: true, infra: true, cwd: plan.dockerInfra.cwd, composeBin: plan.dockerInfra.bin });
+  // if runit is killed hard, the guardian still stops the containers
+  if (plan.dockerfile && plan.containerName) guardSend("cleanup " + JSON.stringify({ cmd: ["docker", "stop", plan.containerName] }));
+  if (plan.compose) guardSend("cleanup " + JSON.stringify({ cmd: [...(plan.composeBin || ["docker", "compose"]), "down"], cwd: plan.cwd }));
+  if (plan.dockerInfra) guardSend("cleanup " + JSON.stringify({ cmd: [...plan.dockerInfra.bin, "stop"], cwd: plan.dockerInfra.cwd }));
   const child = spawnX(spawn, plan.run, {
     cwd: plan.cwd,
-    env: { ...runEnv(), ...(plan.run.env || {}), RUNIT_ACTIVE: "1", RUNIT_RUN_ID: RUN_ID, FORCE_COLOR: "1", PYTHONUNBUFFERED: "1", BROWSER: "none" },
+    env: { ...runEnv(), ...(plan.compose || plan.dockerfile ? dockerEnvFromShell() : {}), ...(plan.run.env || {}), RUNIT_ACTIVE: "1", RUNIT_RUN_ID: RUN_ID, FORCE_COLOR: "1", PYTHONUNBUFFERED: "1", BROWSER: "none" },
     stdio: ["inherit", "pipe", "pipe"],
     detached: !isWin,
   });
@@ -2485,10 +2623,13 @@ async function confirmPlans(plans) {
   const plans = discover(root);
   notes.forEach((n) => say(`${paint(33, "WARNING")} ${n}`));
   if (!plans.length) {
+    const visibleFiles = safeReaddir(root).filter((f) => !f.startsWith("."));
     const why = stackHint(root)
       ? stackHint(root) + "\n"
       : notes.size
       ? ""
+      : visibleFiles.length === 0
+      ? "This directory is empty. Run runit inside an existing project folder.\n"
       : exists(root, "package.json")
       ? "Found package.json, but it has no dev/start/serve script (or it is a library), so there is nothing to run.\n"
       : exists(root, "Dockerfile")

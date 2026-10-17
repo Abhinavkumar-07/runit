@@ -5,7 +5,17 @@
   - **Node.js**: scans all `.js`, `.mjs`, and `.cjs` files (including in `src/`) for `.listen()` or `createServer()` calls so any arbitrary file name (e.g. `custom-backend.mjs`, `api.js`, `service.cjs`) runs automatically even without a `package.json` or start script.
   - **Python**: scans root `.py` files for framework declarations (`FastAPI`, `Flask`, `Litestar`, `Sanic`, `tornado`, `aiohttp`, `Streamlit`, `Gradio`) or `if __name__ == '__main__':`, enabling custom server names like `my_api.py` or `backend.py`.
   - **Go**: scans for any `.go` file in the root folder containing `func main()` (e.g. `service.go`) even when not named `main.go`.
-- **Standalone Node.js Server Detection**: added support for standalone server scripts running directly via `node <file>` in folders without a `package.json`.
+- **Standalone Node.js Server Detection**: added support for standalone server scripts running directly via `node <file>` in folders without a `package.json`, plus automatic fallback to standalone server scripts if a `package.json` contains malformed or invalid JSON.
+- **Strict File Type Verification (`isFile`)**: ensures directories that share names with key configuration files (such as `Dockerfile/`, `docker-compose.yml/`, or `index.html/`) are never mistaken for files.
+- **Docker Compose as Background Infrastructure**: when `docker-compose.yml` provides ready-made services (databases, caches, queues) without an application build step, `runit` boots them in the background (`docker compose up -d`) while running the app on the host, gracefully stopping them on exit to preserve data.
+- **Multi-Port & Colliding Docker Container Support**: parses multiple `EXPOSE` ports for container publishing, uses deterministic folder path hashes in Docker image tags to prevent container overwrites, and ensures Docker connection environment variables (`DOCKER_HOST`, `COMPOSE_*`) pass through cleanly even with `--clean-env`.
+- **Guardian Process Container Cleanup**: the background guardian process tracks active Docker containers and compose stacks, cleaning them up automatically even if the terminal is closed abruptly.
+- **Python Entry Point Filtering (`NOT_ENTRY`)**: filters out build scripts and tests (`setup.py`, `conftest.py`, `noxfile.py`, `tasks.py`, `__init__.py`) and prioritizes true web apps over generic main guards.
+- **Rust Library Safety**: avoids invoking `cargo run` on pure library crates that lack `main.rs`, `src/bin/`, or `[[bin]]` sections.
+- **Simultaneous Port Collision Diagnostics**: cross-references output streams across sibling processes to immediately identify which service claimed a disputed port when starting up concurrently.
+- **Static Root + Subfolder Backend Co-Execution**: automatically starts both a root static site (e.g. landing page or docs) and backend applications residing in subfolders.
+- **Gradle Spring Boot Plugin Detection**: broadened detection to recognize modern `plugins { id "org.springframework.boot" }` syntax alongside traditional dependency formats.
+- **Empty Directory Diagnostics**: alerts users with a clear message when run inside an empty directory rather than showing a generic unrecognised project error.
 
 ## 0.8.1
 - **.NET Support**: added native detection and execution for C# and F# projects (`*.csproj`, `*.fsproj`, `*.sln`) running `dotnet run` on port 5000 with automatic `dotnet restore`.

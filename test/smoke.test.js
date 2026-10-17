@@ -15,9 +15,13 @@ const strip = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "runit test "));
-test.after(() => {
+const cleanup = () => {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
-});
+};
+if (typeof test.after === "function") {
+  test.after(cleanup);
+}
+process.on("exit", cleanup);
 let n = 0;
 function project(files, name) {
   const dir = path.join(root, name || `p${++n}`);
@@ -600,4 +604,262 @@ test("Arbitrary server file names: custom-backend.mjs, my_api.py, service.go", (
   assert.strictEqual(rGo.code, 0);
   assert.match(rGo.out, /go run service\.go/);
 });
+
+test("--docker flag fails cleanly when no Dockerfile or compose file exists", () => {
+  const dir = project({ "index.js": SERVER });
+  const r = once([dir, "--dry", "--docker"]);
+  assert.notStrictEqual(r.code, 0);
+  assert.match(r.out, /No Docker configuration found/);
+});
+
+test("packageManager field in package.json selects pnpm, yarn, or bun", () => {
+  const pnpmDir = project({
+    "package.json": JSON.stringify({ name: "pnpm-app", packageManager: "pnpm@8.15.0", scripts: { dev: "node server.js" } }),
+    "server.js": SERVER,
+  });
+  const rPnpm = once([pnpmDir, "--dry"]);
+  assert.strictEqual(rPnpm.code, 0);
+  assert.match(rPnpm.out, /pnpm dev/);
+
+  const yarnDir = project({
+    "package.json": JSON.stringify({ name: "yarn-app", packageManager: "yarn@3.6.0", scripts: { dev: "node server.js" } }),
+    "server.js": SERVER,
+  });
+  const rYarn = once([yarnDir, "--dry"]);
+  assert.strictEqual(rYarn.code, 0);
+  assert.match(rYarn.out, /yarn dev/);
+
+  const bunDir = project({
+    "package.json": JSON.stringify({ name: "bun-app", packageManager: "bun@1.0.0", scripts: { dev: "node server.js" } }),
+    "server.js": SERVER,
+  });
+  const rBun = once([bunDir, "--dry"]);
+  assert.strictEqual(rBun.code, 0);
+  assert.match(rBun.out, /bun run dev/);
+});
+
+test("invalid package.json JSON logs a warning and falls back to standalone server.js", () => {
+  const dir = project({
+    "package.json": "{ broken invalid json ",
+    "server.js": SERVER,
+  });
+  const r = once([dir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /WARNING.*is not valid JSON/);
+  assert.match(r.out, /node server\.js/);
+});
+
+test("custom server files in src/ are detected with and without package.json", () => {
+  // 1. Without package.json
+  const dirNoPkg = project({
+    "src/custom-api.js": SERVER,
+  });
+  const r1 = once([dirNoPkg, "--dry"]);
+  assert.strictEqual(r1.code, 0);
+  assert.match(r1.out, /node src\/custom-api\.js/);
+
+  // 2. With package.json (no scripts)
+  const dirWithPkg = project({
+    "package.json": JSON.stringify({ name: "custom-app" }),
+    "src/custom-api.js": SERVER,
+  });
+  const r2 = once([dirWithPkg, "--dry"]);
+  assert.strictEqual(r2.code, 0);
+  assert.match(r2.out, /node src\/custom-api\.js/);
+});
+
+test("Python modern frameworks: Litestar, aiohttp, and src/ nested entrypoints", () => {
+  // Litestar
+  const dirLitestar = project({
+    "main.py": "from litestar import Litestar\napp = Litestar()\n",
+  });
+  const rLite = once([dirLitestar, "--dry"]);
+  assert.strictEqual(rLite.code, 0);
+  assert.match(rLite.out, /Litestar/);
+  assert.match(rLite.out, /main:app/);
+
+  // aiohttp
+  const dirAio = project({
+    "server.py": "from aiohttp import web\napp = web.Application()\nweb.run_app(app)\n",
+  });
+  const rAio = once([dirAio, "--dry"]);
+  assert.strictEqual(rAio.code, 0);
+  assert.match(rAio.out, /aiohttp/);
+  assert.match(rAio.out, /server\.py/);
+
+  // Nested src/server.py with custom variable
+  const dirNested = project({
+    "src/server.py": "from fastapi import FastAPI\nmy_api = FastAPI()\n",
+  });
+  const rNested = once([dirNested, "--dry"]);
+  assert.strictEqual(rNested.code, 0);
+  assert.match(rNested.out, /FastAPI/);
+  assert.match(rNested.out, /src\.server:my_api/);
+});
+
+test("Go alternative layout: api/main.go with and without go.mod", () => {
+  const dirMod = project({
+    "go.mod": "module example.com/api\n\ngo 1.21\n",
+    "api/main.go": "package main\nfunc main() {}\n",
+  });
+  const rMod = once([dirMod, "--dry"]);
+  assert.strictEqual(rMod.code, 0);
+  assert.match(rMod.out, /go run \.\/api/);
+
+  const dirNoMod = project({
+    "api/main.go": "package main\nfunc main() {}\n",
+  });
+  const rNoMod = once([dirNoMod, "--dry"]);
+  assert.strictEqual(rNoMod.code, 0);
+  assert.match(rNoMod.out, /go run api\/main\.go/);
+});
+
+test("Java Gradle Spring Boot with org.springframework.boot plugin", () => {
+  const dir = project({
+    "build.gradle": 'plugins { id "org.springframework.boot" version "3.2.0" }',
+  });
+  const r = once([dir, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /Spring Boot \(Gradle\)/);
+  assert.match(r.out, /bootRun/);
+});
+
+test("PHP detection: public/index.php docroot and Laravel artisan", () => {
+  const dirDocroot = project({
+    "public/index.php": "<?php echo 1;",
+  });
+  const rDoc = once([dirDocroot, "--dry"]);
+  assert.strictEqual(rDoc.code, 0);
+  assert.match(rDoc.out, /php -S localhost:8000 -t public/);
+
+  const dirArtisan = project({
+    "artisan": "#!/usr/bin/env php",
+  });
+  const rArt = once([dirArtisan, "--dry"]);
+  assert.strictEqual(rArt.code, 0);
+  assert.match(rArt.out, /Laravel/);
+  assert.match(rArt.out, /php artisan serve/);
+});
+
+test("Elixir project detection: Phoenix vs plain Elixir", () => {
+  const dirPhx = project({
+    "mix.exs": 'defmodule MyApp.MixProject do\n  def project do\n    [deps: [{:phoenix, "~> 1.7"}]]\n  end\nend',
+  });
+  const rPhx = once([dirPhx, "--dry"]);
+  assert.strictEqual(rPhx.code, 0);
+  assert.match(rPhx.out, /Phoenix/);
+  assert.match(rPhx.out, /mix phx\.server/);
+
+  const dirElx = project({
+    "mix.exs": 'defmodule MyApp.MixProject do\n  def project do\n    [deps: []]\n  end\nend',
+  });
+  const rElx = once([dirElx, "--dry"]);
+  assert.strictEqual(rElx.code, 0);
+  assert.match(rElx.out, /Elixir/);
+  assert.match(rElx.out, /mix run --no-halt/);
+});
+
+test("Runtime crash diagnostics: actionable hints for DB, OpenSSL, EACCES, and missing module", () => {
+  // 1. PostgreSQL ECONNREFUSED
+  const dirPg = project({
+    "package.json": JSON.stringify({ scripts: { start: "node boom.js" } }),
+    "boom.js": 'console.error("Error: connect ECONNREFUSED 127.0.0.1:5432"); process.exit(1);',
+  });
+  const rPg = once([dirPg, "--no-open"]);
+  assert.notStrictEqual(rPg.code, 0);
+  assert.match(rPg.out, /PostgreSQL \(port 5432\)/);
+
+  // 2. OpenSSL 3.0 legacy crypto incompatibility
+  const dirOssl = project({
+    "package.json": JSON.stringify({ scripts: { start: "node boom.js" } }),
+    "boom.js": 'console.error("Error: digital envelope routines::unsupported ERR_OSSL_EVP_UNSUPPORTED"); process.exit(1);',
+  });
+  const rOssl = once([dirOssl, "--no-open"]);
+  assert.notStrictEqual(rOssl.code, 0);
+  assert.match(rOssl.out, /NODE_OPTIONS=--openssl-legacy-provider/);
+
+  // 3. Privileged port (< 1024) EACCES
+  const dirPort = project({
+    "package.json": JSON.stringify({ scripts: { start: "node boom.js" } }),
+    "boom.js": 'console.error("Error: listen EACCES: permission denied 0.0.0.0:80"); process.exit(1);',
+  });
+  const rPort = once([dirPort, "--no-open"]);
+  assert.notStrictEqual(rPort.code, 0);
+  assert.match(rPort.out, /privileged port \(< 1024\)/);
+
+  // 4. Missing Node module
+  const dirMod = project({
+    "package.json": JSON.stringify({ scripts: { start: "node boom.js" } }),
+    "boom.js": 'console.error("Error: Cannot find module \'lodash\'"); process.exit(1);',
+  });
+  const rMod = once([dirMod, "--no-open"]);
+  assert.notStrictEqual(rMod.code, 0);
+  assert.match(rMod.out, /npm install lodash/);
+});
+
+test("Environment template copying and preservation safety", () => {
+  // Pre-existing .env is preserved
+  const dirPreserve = project({
+    "package.json": JSON.stringify({ scripts: { start: "node server.js" } }),
+    "server.js": SERVER,
+    ".env": "EXISTING=keep_me\n",
+    ".env.example": "EXISTING=overwrite_me\n",
+  });
+  const rPreserve = once([dirPreserve, "--dry"]);
+  assert.strictEqual(rPreserve.code, 0);
+  assert.strictEqual(fs.readFileSync(path.join(dirPreserve, ".env"), "utf8"), "EXISTING=keep_me\n");
+});
+
+test("an empty directory prints a clear actionable message", () => {
+  const dirEmpty = project({});
+  const r = once([dirEmpty, "--dry"]);
+  assert.notStrictEqual(r.code, 0);
+  assert.match(r.out, /This directory is empty/);
+});
+
+test("empty folder argument (e.g. unset shell variable) returns a clear error", () => {
+  const r = once(["", "--dry"]);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.out, /the folder path is empty/);
+});
+
+test("isFile safety prevents directories named Dockerfile or index.html from being detected as files", () => {
+  const dirFake = project({});
+  fs.mkdirSync(path.join(dirFake, "Dockerfile"));
+  fs.mkdirSync(path.join(dirFake, "index.html"));
+  const r = once([dirFake, "--dry"]);
+  assert.notStrictEqual(r.code, 0);
+  assert.match(r.out, /Couldn't recognise this project/);
+});
+
+test("Python NOT_ENTRY filter ignores setup.py and conftest.py as standalone apps", () => {
+  const dirSetup = project({
+    "setup.py": 'from setuptools import setup\nsetup(name="pkg")\n',
+    "conftest.py": 'import pytest\n',
+  });
+  const r = once([dirSetup, "--dry"]);
+  assert.notStrictEqual(r.code, 0);
+  assert.match(r.out, /Couldn't recognise this project/);
+});
+
+test("package.json docs:dev script is recognized", () => {
+  const dirDocs = project({
+    "package.json": JSON.stringify({ scripts: { "docs:dev": "vitepress dev docs" } }),
+  });
+  const r = once([dirDocs, "--dry"]);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.out, /docs:dev/);
+});
+
+test("Rust pure library crate without bin targets is not executed", () => {
+  const dirRustLib = project({
+    "Cargo.toml": '[package]\nname = "mylib"\nversion = "0.1.0"\n',
+    "src/lib.rs": "pub fn add(a: i32, b: i32) -> i32 { a + b }",
+  });
+  const r = once([dirRustLib, "--dry"]);
+  assert.notStrictEqual(r.code, 0);
+  assert.match(r.out, /Couldn't recognise this project/);
+});
+
+
 
